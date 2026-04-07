@@ -11,12 +11,14 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
+// 深色主题下使用的静态配色。
 private val DarkColorScheme = darkColorScheme(
     primary = Purple80,
     secondary = PurpleGrey80,
     tertiary = Pink80
 )
 
+// 浅色主题下使用的静态配色。
 private val LightColorScheme = lightColorScheme(
     primary = Purple40,
     secondary = PurpleGrey40,
@@ -33,6 +35,11 @@ private val LightColorScheme = lightColorScheme(
     */
 )
 
+/**
+ * 应用统一主题入口。
+ *
+ * 优先使用 Android 12+ 的动态取色；如果系统不支持，再回落到静态色板。
+ */
 @Composable
 fun YyproxyTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -40,6 +47,7 @@ fun YyproxyTheme(
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
+    // 根据系统版本和深浅色状态决定最终采用哪套配色方案。
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current

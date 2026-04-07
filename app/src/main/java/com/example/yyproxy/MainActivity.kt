@@ -34,6 +34,12 @@ import com.example.yyproxy.ui.theme.YyproxyTheme
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
+/**
+ * 应用主界面入口。
+ *
+ * 这里主要负责挂载 Compose UI，不承载复杂业务逻辑；
+ * 配置读写和服务拉起都由下方的 Composable/工具函数完成。
+ */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,13 +52,23 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * 顶层应用状态容器。
+ *
+ * 它持有“当前规则列表”“当前正在编辑的规则”“是否处于新增模式”等界面状态，
+ * 并把这些状态流转给列表页和编辑页。
+ */
 @Composable
 fun ProxyApp() {
     val context = LocalContext.current
+    // 首次进入页面时，从本地持久化里恢复用户之前保存的规则。
     var proxies by remember { mutableStateOf(ProxySettings.loadProxies(context)) }
+    // editingProxy 不为空表示正在编辑已有规则。
     var editingProxy by remember { mutableStateOf<ProxyConfig?>(null) }
+    // isAdding 为 true 表示当前正在新建一条规则。
     var isAdding by remember { mutableStateOf(false) }
 
+    // 保存时统一更新列表、持久化配置，并触发 Service 重新同步运行中的规则。
     val onSave = { updatedProxy: ProxyConfig ->
         val newList = if (isAdding) {
             proxies + updatedProxy
@@ -67,6 +83,7 @@ fun ProxyApp() {
     }
 
     if (editingProxy != null || isAdding) {
+        // 编辑态下拦截系统返回键，避免 Compose 页面还在但状态没有回退。
         BackHandler {
             editingProxy = null
             isAdding = false
@@ -100,6 +117,11 @@ fun ProxyApp() {
     }
 }
 
+/**
+ * 按当前 Android 版本要求启动前台服务。
+ *
+ * 所有修改配置的动作最终都会调用这里，让后台代理尽快与最新配置对齐。
+ */
 fun startService(context: Context) {
     val intent = Intent(context, ProxyService::class.java)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -109,6 +131,11 @@ fun startService(context: Context) {
     }
 }
 
+/**
+ * 获取当前设备上所有可用的 IPv4 地址。
+ *
+ * 页面里把这些地址展示给用户，方便他在局域网其它设备上连接手机的监听端口。
+ */
 fun getLocalIpAddresses(): List<String> {
     val ips = mutableListOf<String>()
     try {
@@ -124,11 +151,17 @@ fun getLocalIpAddresses(): List<String> {
             }
         }
     } catch (e: Exception) {
+        // 这里保留简单打印，主要用于开发期观察网络接口枚举是否异常。
         e.printStackTrace()
     }
     return if (ips.isEmpty()) listOf("No IP found") else ips
 }
 
+/**
+ * 代理规则列表页。
+ *
+ * 页面上半部分显示本机 IP，下半部分显示所有规则卡片，并提供新增/刷新入口。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProxyListScreen(
@@ -141,7 +174,7 @@ fun ProxyListScreen(
     val context = LocalContext.current
     var ipAddresses by remember { mutableStateOf(getLocalIpAddresses()) }
 
-    // Listen for network changes
+    // 监听网络变化，保证 Wi‑Fi/移动网络切换后页面上的 IP 信息能自动刷新。
     DisposableEffect(Unit) {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -183,9 +216,9 @@ fun ProxyListScreen(
                 Icon(Icons.Default.Add, contentDescription = "Add Proxy")
             }
         }
-    ) { padding ->
+        ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
-            // IP Addresses Display Area
+            // 顶部 IP 信息区，告诉用户当前设备在局域网里可以用哪些地址访问本机监听端口。
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -213,6 +246,7 @@ fun ProxyListScreen(
                 }
             }
 
+            // 规则列表区，每一项都可以点击进入编辑。
             LazyColumn(modifier = Modifier.weight(1f)) {
                 items(proxies) { proxy ->
                     ProxyItem(proxy, onEdit, onDelete, onToggle)
@@ -222,6 +256,11 @@ fun ProxyListScreen(
     }
 }
 
+/**
+ * 单条代理规则卡片。
+ *
+ * 点击整张卡片进入编辑，右侧开关控制启停，删除按钮直接移除规则。
+ */
 @Composable
 fun ProxyItem(
     proxy: ProxyConfig,
@@ -239,10 +278,12 @@ fun ProxyItem(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 左侧文本区展示名称和核心路由信息，帮助用户快速确认转发方向。
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = proxy.name.ifEmpty { "Unnamed Proxy" }, style = MaterialTheme.typography.titleMedium)
                 Text(text = "${proxy.proxyType}: ${proxy.localPort} -> ${proxy.remoteHost}:${proxy.remotePort}", style = MaterialTheme.typography.bodySmall)
             }
+            // 开关直接控制是否启用该规则。
             Switch(checked = proxy.isEnabled, onCheckedChange = { onToggle(proxy, it) })
             IconButton(onClick = { onDelete(proxy) }) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
@@ -251,6 +292,11 @@ fun ProxyItem(
     }
 }
 
+/**
+ * 代理规则编辑页。
+ *
+ * 既负责新增规则，也负责编辑已有规则；两种场景共用同一套表单。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProxyEditScreen(
@@ -258,6 +304,7 @@ fun ProxyEditScreen(
     onSave: (ProxyConfig) -> Unit,
     onCancel: () -> Unit
 ) {
+    // 把传入的 proxy 拆成一组可编辑的 Compose 状态，用户输入过程中不会立刻污染原对象。
     var name by remember { mutableStateOf(proxy.name) }
     var remoteHost by remember { mutableStateOf(proxy.remoteHost) }
     var remotePort by remember { mutableStateOf(proxy.remotePort.toString()) }
@@ -281,11 +328,13 @@ fun ProxyEditScreen(
                 .fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // 这几个输入框分别对应规则的展示名、远端地址、远端端口和本地监听端口。
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = remoteHost, onValueChange = { remoteHost = it }, label = { Text("Remote Proxy Host") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = remotePort, onValueChange = { remotePort = it }, label = { Text("Remote Proxy Port") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = localPort, onValueChange = { localPort = it }, label = { Text("Local Listening Port") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
 
+            // 代理类型目前主要用于展示和配置区分，后续如果扩展协议解析可以复用这个字段。
             Row(verticalAlignment = Alignment.CenterVertically) {
                 RadioButton(selected = proxyType == "HTTP", onClick = { proxyType = "HTTP" })
                 Text("HTTP")
@@ -296,6 +345,7 @@ fun ProxyEditScreen(
 
             Button(
                 onClick = {
+                    // 端口输入非法时给一个保底默认值，避免直接抛异常导致界面崩掉。
                     onSave(proxy.copy(
                         name = name,
                         remoteHost = remoteHost,
