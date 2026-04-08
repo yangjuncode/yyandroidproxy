@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -25,7 +24,6 @@ import androidx.core.app.NotificationCompat
 class ProxyService : Service() {
 
     private val channelId = "ProxyServiceChannel"
-    private val platformSupport by lazy { ProxyPlatformSupport.forSdk(Build.VERSION.SDK_INT) }
     private val taskCoordinator = ProxyTaskCoordinator(
         object : ProxyTaskFactory {
             override fun start(config: ProxyConfig): ProxyTaskHandle {
@@ -81,15 +79,7 @@ class ProxyService : Service() {
 
     private fun ensureForeground() {
         val notification = createNotification()
-        if (platformSupport.requiresSpecialUseForegroundServiceType && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        startForeground(NOTIFICATION_ID, notification)
     }
 
     private fun refreshNotification() {

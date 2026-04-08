@@ -87,6 +87,13 @@ fun ProxyApp() {
         hasNotificationPermission = granted
     }
 
+    LaunchedEffect(Unit) {
+        startService(context)
+        if (platformSupport.requiresNotificationPermission && !hasNotificationPermission) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     DisposableEffect(context) {
         val receiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(receiveContext: Context?, intent: Intent?) {
