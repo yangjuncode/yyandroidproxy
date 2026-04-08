@@ -1,17 +1,22 @@
 package com.example.yyproxy
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.Bundle
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -30,6 +35,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.yyproxy.ui.theme.YyproxyTheme
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -61,12 +70,56 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ProxyApp() {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val platformSupport = remember { ProxyPlatformSupport.forSdk(Build.VERSION.SDK_INT) }
     // 首次进入页面时，从本地持久化里恢复用户之前保存的规则。
     var proxies by remember { mutableStateOf(ProxySettings.loadProxies(context)) }
+    var runtimeStatuses by remember { mutableStateOf(ProxyRuntimeStatusStore.loadStatuses(context)) }
     // editingProxy 不为空表示正在编辑已有规则。
     var editingProxy by remember { mutableStateOf<ProxyConfig?>(null) }
     // isAdding 为 true 表示当前正在新建一条规则。
     var isAdding by remember { mutableStateOf(false) }
+    var hasNotificationPermission by remember { mutableStateOf(isNotificationPermissionGranted(context)) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotificationPermission = granted
+    }
+
+    DisposableEffect(context) {
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(receiveContext: Context?, intent: Intent?) {
+                if (intent?.action == ProxyService.ACTION_PROXY_STATUS_CHANGED) {
+                    proxies = ProxySettings.loadProxies(context)
+                    runtimeStatuses = ProxyRuntimeStatusStore.loadStatuses(context)
+                }
+            }
+        }
+        val filter = IntentFilter(ProxyService.ACTION_PROXY_STATUS_CHANGED)
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        onDispose {
+            context.unregisterReceiver(receiver)
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasNotificationPermission = isNotificationPermissionGranted(context)
+                runtimeStatuses = ProxyRuntimeStatusStore.loadStatuses(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     // 保存时统一更新列表、持久化配置，并触发 Service 重新同步运行中的规则。
     val onSave = { updatedProxy: ProxyConfig ->
@@ -99,12 +152,18 @@ fun ProxyApp() {
     } else {
         ProxyListScreen(
             proxies = proxies,
+            runtimeStatuses = runtimeStatuses,
+            notificationPermissionRequired = platformSupport.requiresNotificationPermission && !hasNotificationPermission,
+            onRequestNotificationPermission = {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            },
             onAdd = { isAdding = true },
             onEdit = { editingProxy = it },
             onDelete = { proxy ->
                 val newList = proxies.filter { it.id != proxy.id }
                 proxies = newList
                 ProxySettings.saveProxies(context, newList)
+                ProxyRuntimeStatusStore.removeStatus(context, proxy.id)
                 startService(context)
             },
             onToggle = { proxy, enabled ->
@@ -166,6 +225,9 @@ fun getLocalIpAddresses(): List<String> {
 @Composable
 fun ProxyListScreen(
     proxies: List<ProxyConfig>,
+    runtimeStatuses: Map<String, ProxyRuntimeStatus>,
+    notificationPermissionRequired: Boolean,
+    onRequestNotificationPermission: () -> Unit,
     onAdd: () -> Unit,
     onEdit: (ProxyConfig) -> Unit,
     onDelete: (ProxyConfig) -> Unit,
@@ -218,6 +280,34 @@ fun ProxyListScreen(
         }
         ) { padding ->
         Column(modifier = Modifier.padding(padding)) {
+            if (notificationPermissionRequired) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    shape = MaterialTheme.shapes.medium
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "Allow notifications on Android 13+",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Foreground service notifications stay visible only after you grant notification permission.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(onClick = onRequestNotificationPermission) {
+                            Text("Grant Permission")
+                        }
+                    }
+                }
+            }
+
             // 顶部 IP 信息区，告诉用户当前设备在局域网里可以用哪些地址访问本机监听端口。
             Surface(
                 modifier = Modifier
@@ -249,7 +339,13 @@ fun ProxyListScreen(
             // 规则列表区，每一项都可以点击进入编辑。
             LazyColumn(modifier = Modifier.weight(1f)) {
                 items(proxies) { proxy ->
-                    ProxyItem(proxy, onEdit, onDelete, onToggle)
+                    ProxyItem(
+                        proxy = proxy,
+                        runtimeStatus = runtimeStatuses[proxy.id],
+                        onEdit = onEdit,
+                        onDelete = onDelete,
+                        onToggle = onToggle
+                    )
                 }
             }
         }
@@ -264,10 +360,24 @@ fun ProxyListScreen(
 @Composable
 fun ProxyItem(
     proxy: ProxyConfig,
+    runtimeStatus: ProxyRuntimeStatus?,
     onEdit: (ProxyConfig) -> Unit,
     onDelete: (ProxyConfig) -> Unit,
     onToggle: (ProxyConfig, Boolean) -> Unit
 ) {
+    val statusLabel = when {
+        !proxy.isEnabled -> "Stopped"
+        runtimeStatus == null -> "Pending sync"
+        runtimeStatus.state == ProxyRuntimeState.RUNNING -> "Running"
+        runtimeStatus.state == ProxyRuntimeState.ERROR -> "Start failed"
+        else -> "Stopped"
+    }
+    val statusColor = when (runtimeStatus?.state) {
+        ProxyRuntimeState.ERROR -> MaterialTheme.colorScheme.error
+        ProxyRuntimeState.RUNNING -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -282,6 +392,12 @@ fun ProxyItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = proxy.name.ifEmpty { "Unnamed Proxy" }, style = MaterialTheme.typography.titleMedium)
                 Text(text = "${proxy.proxyType}: ${proxy.localPort} -> ${proxy.remoteHost}:${proxy.remotePort}", style = MaterialTheme.typography.bodySmall)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(text = "Status: $statusLabel", style = MaterialTheme.typography.bodySmall, color = statusColor)
+                runtimeStatus?.message?.takeIf { it.isNotBlank() }?.let { message ->
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(text = message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
             }
             // 开关直接控制是否启用该规则。
             Switch(checked = proxy.isEnabled, onCheckedChange = { onToggle(proxy, it) })
@@ -290,6 +406,17 @@ fun ProxyItem(
             }
         }
     }
+}
+
+private fun isNotificationPermissionGranted(context: Context): Boolean {
+    if (!ProxyPlatformSupport.forSdk(Build.VERSION.SDK_INT).requiresNotificationPermission) {
+        return true
+    }
+
+    return ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.POST_NOTIFICATIONS
+    ) == PackageManager.PERMISSION_GRANTED
 }
 
 /**

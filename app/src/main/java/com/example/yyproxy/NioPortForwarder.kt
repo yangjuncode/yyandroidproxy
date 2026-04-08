@@ -41,6 +41,10 @@ class NioPortForwarder(
 
     @Volatile
     private var loopThread: Thread? = null
+    private val bufferPool = ByteBufferPool(
+        bufferSize = BUFFER_SIZE,
+        maxPoolSize = MAX_POOLED_BUFFERS
+    )
 
     fun start() {
         // 一个 forwarder 只允许启动一次，避免重复绑定同一端口。
@@ -179,10 +183,17 @@ class NioPortForwarder(
 
     private fun readFromChannel(key: SelectionKey) {
         val state = key.attachment() as ChannelState
-        val bytesRead = state.channel.read(state.readBuffer)
+        val buffer = bufferPool.acquire()
+        val bytesRead = try {
+            state.channel.read(buffer)
+        } catch (e: IOException) {
+            bufferPool.release(buffer)
+            throw e
+        }
 
         when {
             bytesRead == -1 -> {
+                bufferPool.release(buffer)
                 // -1 只代表“这一方向读到 EOF”，不能直接把整条连接关掉，
                 // 否则会截断另一方向还没回完的数据。
                 state.readClosed = true
@@ -192,18 +203,15 @@ class NioPortForwarder(
                 return
             }
 
-            bytesRead == 0 -> return
+            bytesRead == 0 -> {
+                bufferPool.release(buffer)
+                return
+            }
         }
 
-        // 读缓冲区里的数据会复制成独立 ByteBuffer 挂到对端写队列，
-        // 这样一次读事件和后续多次写事件就能解耦。
-        state.readBuffer.flip()
-        val copy = ByteBuffer.allocate(bytesRead)
-        copy.put(state.readBuffer)
-        copy.flip()
-        state.readBuffer.clear()
-
-        enqueueWrite(state.peer, copy)
+        // 直接把池化缓冲区排到对端写队列，减少高吞吐下的小对象分配抖动。
+        buffer.flip()
+        enqueueWrite(state.peer, buffer)
     }
 
     private fun writeToChannel(key: SelectionKey) {
@@ -218,6 +226,7 @@ class NioPortForwarder(
             }
 
             state.pendingWrites.removeFirst()
+            bufferPool.release(pending.buffer)
             state.pendingBytes -= pending.size
         }
 
@@ -304,10 +313,20 @@ class NioPortForwarder(
 
         // 关闭时同时回收 client/remote 两个通道，避免只关一侧留下悬挂连接。
         connection.closed = true
+        clearPendingWrites(connection.clientState)
+        clearPendingWrites(connection.remoteState)
         connection.clientState.key?.cancel()
         connection.remoteState.key?.cancel()
         safeClose(connection.client)
         safeClose(connection.remote)
+    }
+
+    private fun clearPendingWrites(state: ChannelState) {
+        while (state.pendingWrites.isNotEmpty()) {
+            val pending = state.pendingWrites.removeFirst()
+            bufferPool.release(pending.buffer)
+        }
+        state.pendingBytes = 0
     }
 
     private fun cleanupSelector(selector: Selector) {
@@ -348,8 +367,6 @@ class NioPortForwarder(
         // readClosed 表示本方向已经收到了 EOF；outputShutdown 表示我们已向这一侧传播 EOF。
         var readClosed: Boolean = false
         var outputShutdown: Boolean = false
-        // 每个方向各自持有一个读缓冲区，避免频繁创建大块临时数组。
-        val readBuffer: ByteBuffer = ByteBuffer.allocate(BUFFER_SIZE)
         // pendingWrites 里的 ByteBuffer 代表“已经读到，但还没完全写出去”的数据块。
         val pendingWrites: ArrayDeque<PendingWrite> = ArrayDeque()
         var pendingBytes: Int = 0
@@ -370,5 +387,7 @@ class NioPortForwarder(
         const val BUFFER_SIZE = 16 * 1024
         // 单方向待写数据的软上限，用于触发轻量背压，避免慢连接把内存撑大。
         const val MAX_PENDING_BYTES = 256 * 1024
+        // 池子只缓存一部分最近用过的缓冲区，避免无限囤积空闲内存。
+        const val MAX_POOLED_BUFFERS = 64
     }
 }
