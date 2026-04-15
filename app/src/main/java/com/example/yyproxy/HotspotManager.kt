@@ -13,7 +13,10 @@ object HotspotManager {
 
     enum class HotspotState {
         ENABLED,
+        ENABLING,
         DISABLED,
+        DISABLING,
+        FAILED,
         UNKNOWN
     }
 
@@ -23,11 +26,20 @@ object HotspotManager {
             val method: Method = wifiManager.javaClass.getDeclaredMethod("getWifiApState")
             val state = method.invoke(wifiManager) as Int
             hasLoggedStateReflectionFailure = false
+            val WIFI_AP_STATE_DISABLING = 10
+            val WIFI_AP_STATE_DISABLED = 11
+            val WIFI_AP_STATE_ENABLING = 12
+            val WIFI_AP_STATE_ENABLED = 13
+            val WIFI_AP_STATE_FAILED = 14
+
             Log.d(TAG, "getWifiApState returned: $state")
-            if (state == WIFI_AP_STATE_ENABLED) {
-                HotspotState.ENABLED
-            } else {
-                HotspotState.DISABLED
+            when (state) {
+                WIFI_AP_STATE_ENABLED -> HotspotState.ENABLED
+                WIFI_AP_STATE_ENABLING -> HotspotState.ENABLING
+                WIFI_AP_STATE_DISABLED -> HotspotState.DISABLED
+                WIFI_AP_STATE_DISABLING -> HotspotState.DISABLING
+                WIFI_AP_STATE_FAILED -> HotspotState.FAILED
+                else -> HotspotState.UNKNOWN
             }
         } catch (e: Exception) {
             if (!hasLoggedStateReflectionFailure) {

@@ -38,12 +38,20 @@ class ProxyService : Service() {
     private var isShuttingDown = false
     private val handler = Handler(Looper.getMainLooper())
     private val hotspotCheckInterval = 10 * 60 * 1000L // 10 minutes
-    private val automationStepTimeoutMs = 20 * 1000L
+    private val automationStepTimeoutMs = 40 * 1000L
+    private var lastHotspotCheckTime = 0L
+    private var hasEnabledOnce = false
 
     private val hotspotCheckRunnable = object : Runnable {
         override fun run() {
+            if (hasEnabledOnce) {
+                Log.d("ProxyService", "Periodic check stopped as hotspot was enabled once")
+                return
+            }
             checkAndEnableHotspot(AutomationTrigger.PERIODIC_CHECK)
-            handler.postDelayed(this, hotspotCheckInterval)
+            if (!hasEnabledOnce) {
+                handler.postDelayed(this, hotspotCheckInterval)
+            }
         }
     }
 
@@ -73,7 +81,7 @@ class ProxyService : Service() {
                 }
             }
         },
-        hotspotStateReader = { HotspotManager.getHotspotState(this) == HotspotManager.HotspotState.ENABLED },
+        hotspotStateReader = { HotspotManager.getHotspotState(this) },
         accessibilityEnabled = { AccessibilityServiceState.isAutomationServiceEnabled(this) }
     )
 
@@ -141,13 +149,25 @@ class ProxyService : Service() {
 
         // 启动或更新热点检查任务
         handler.removeCallbacks(hotspotCheckRunnable)
-        if (intent?.action == ACTION_REFRESH) {
-            Log.d("ProxyService", "Manual refresh: triggering immediate hotspot check")
+        val isManualRefresh = intent?.action == ACTION_REFRESH
+        if (isManualRefresh) {
+            Log.d("ProxyService", "Manual refresh: resetting enabled flag and triggering check")
+            hasEnabledOnce = false
             checkAndEnableHotspot(AutomationTrigger.MANUAL_REFRESH)
         }
         
         if (ProxySettings.isAutoHotspotEnabled(this) && autoHotspotSupport.isSupported) {
-            handler.post(hotspotCheckRunnable)
+            // If it's a first start or explicit refresh, run soon. 
+            // Otherwise, let the periodic timer handle it to avoid spam on every app resume.
+            if (intent?.action == ACTION_REFRESH || lastHotspotCheckTime == 0L) {
+                if (!hasEnabledOnce) {
+                    handler.post(hotspotCheckRunnable)
+                }
+            } else {
+                if (!hasEnabledOnce) {
+                    handler.postDelayed(hotspotCheckRunnable, hotspotCheckInterval)
+                }
+            }
         }
         syncAutomationStepTimeout()
 
@@ -155,6 +175,12 @@ class ProxyService : Service() {
     }
 
     private fun checkAndEnableHotspot(trigger: AutomationTrigger) {
+        val now = System.currentTimeMillis()
+        // Throttle periodic checks if they happen too frequently (e.g. due to frequent app resumptions)
+        if (trigger == AutomationTrigger.PERIODIC_CHECK && (now - lastHotspotCheckTime < 30000)) {
+            return
+        }
+
         val hotspotState = HotspotManager.getHotspotState(this)
         val accessibilityEnabled = AccessibilityServiceState.isAutomationServiceEnabled(this)
         val isSupported = autoHotspotSupport.isSupported
@@ -167,9 +193,19 @@ class ProxyService : Service() {
             ProxySettings.isAutoHotspotEnabled(this) && isSupported
         }
 
+        // Only trigger if DISABLED. If it's already ENABLING, wait.
         val shouldRequest = shouldAllowByPolicy &&
             accessibilityEnabled &&
             hotspotState == HotspotManager.HotspotState.DISABLED
+
+        if (hotspotState == HotspotManager.HotspotState.ENABLED) {
+            Log.d("ProxyService", "Hotspot is already ENABLED, marking as enabled once and stopping future periodic checks")
+            hasEnabledOnce = true
+        }
+
+        if (shouldRequest || trigger == AutomationTrigger.MANUAL_REFRESH) {
+            lastHotspotCheckTime = now
+        }
 
         Log.d("ProxyService", "Hotspot check ($trigger): state=$hotspotState, accessibility=$accessibilityEnabled, policy=$shouldAllowByPolicy -> shouldRequest=$shouldRequest")
 
@@ -243,13 +279,19 @@ class ProxyService : Service() {
             allowSingleFallback = rootContainsAnyText(root, HOTSPOT_MAIN_PAGE_TEXT_HINTS)
         ) { mainSwitch ->
             hotspotAutomationCoordinator.onHotspotMainPage(mainSwitchChecked = mainSwitch.isChecked)
-            when (hotspotAutomationCoordinator.snapshot().stage) {
+            
+            val snapshot = hotspotAutomationCoordinator.snapshot()
+            when (snapshot.stage) {
                 AutomationStage.ENABLING_HOTSPOT -> handleEnableHotspotPageUpdate(
                     service = service,
                     root = root,
                     className = className
                 )
-                AutomationStage.COMPLETED -> service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+                AutomationStage.COMPLETED -> {
+                    Log.d("ProxyService", "Automation COMPLETED, marking as enabled once")
+                    hasEnabledOnce = true
+                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+                }
                 else -> Unit
             }
         }
@@ -276,6 +318,8 @@ class ProxyService : Service() {
             }
             hotspotAutomationCoordinator.onHotspotMainPage(mainSwitchChecked = true)
             if (hotspotAutomationCoordinator.snapshot().stage == AutomationStage.COMPLETED) {
+                Log.d("ProxyService", "Automation COMPLETED after switch click, marking as enabled once")
+                hasEnabledOnce = true
                 service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
             }
         }

@@ -14,7 +14,7 @@ class HotspotAutomationCoordinatorTest {
         val launcher = RecordingSettingsLauncher()
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = launcher,
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true }
         )
 
@@ -30,7 +30,7 @@ class HotspotAutomationCoordinatorTest {
         val launcher = RecordingSettingsLauncher()
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = launcher,
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true }
         )
 
@@ -48,7 +48,7 @@ class HotspotAutomationCoordinatorTest {
         val launcher = RecordingSettingsLauncher()
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = launcher,
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true }
         )
 
@@ -63,7 +63,7 @@ class HotspotAutomationCoordinatorTest {
     fun duplicate_request_is_ignored_while_run_is_active() {
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = RecordingSettingsLauncher(),
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true }
         )
 
@@ -76,7 +76,7 @@ class HotspotAutomationCoordinatorTest {
         val launcher = RecordingSettingsLauncher()
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = launcher,
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { false }
         )
 
@@ -90,7 +90,7 @@ class HotspotAutomationCoordinatorTest {
         val launcher = RecordingSettingsLauncher()
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = launcher,
-            hotspotStateReader = { true },
+            hotspotStateReader = { HotspotManager.HotspotState.ENABLED },
             accessibilityEnabled = { true }
         )
 
@@ -101,17 +101,17 @@ class HotspotAutomationCoordinatorTest {
 
     @Test
     fun verification_completes_when_hotspot_is_on() {
-        var hotspotEnabled = false
+        var hotspotState = HotspotManager.HotspotState.DISABLED
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = RecordingSettingsLauncher(),
-            hotspotStateReader = { hotspotEnabled },
+            hotspotStateReader = { hotspotState },
             accessibilityEnabled = { true }
         )
 
         coordinator.requestAutomation(AutomationTrigger.BOOT)
         coordinator.onHotspotMainPage(mainSwitchChecked = false)
-        coordinator.onHotspotSwitchClicked()
-        hotspotEnabled = true
+        coordinator.onAutoTurnOffPage(autoTurnOffChecked = false)
+        hotspotState = HotspotManager.HotspotState.ENABLED
         coordinator.onHotspotMainPage(mainSwitchChecked = true)
         coordinator.onHotspotMainPage(mainSwitchChecked = true)
 
@@ -122,7 +122,7 @@ class HotspotAutomationCoordinatorTest {
     fun checked_main_switch_enters_verifying_when_reader_is_stale() {
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = RecordingSettingsLauncher(),
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true }
         )
 
@@ -140,9 +140,9 @@ class HotspotAutomationCoordinatorTest {
             hotspotStateReader = {
                 reads += 1
                 when (reads) {
-                    1 -> false
-                    2 -> true
-                    else -> true
+                    1 -> HotspotManager.HotspotState.DISABLED
+                    2 -> HotspotManager.HotspotState.ENABLED
+                    else -> HotspotManager.HotspotState.ENABLED
                 }
             },
             accessibilityEnabled = { true }
@@ -160,7 +160,7 @@ class HotspotAutomationCoordinatorTest {
     fun out_of_order_callbacks_are_ignored() {
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = RecordingSettingsLauncher(),
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true }
         )
 
@@ -177,7 +177,7 @@ class HotspotAutomationCoordinatorTest {
     fun auto_turn_off_checked_stays_in_disabling_state() {
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = RecordingSettingsLauncher(),
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true }
         )
 
@@ -192,7 +192,7 @@ class HotspotAutomationCoordinatorTest {
     fun unchecked_main_switch_moves_directly_to_enabling_state() {
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = RecordingSettingsLauncher(),
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true }
         )
 
@@ -206,7 +206,7 @@ class HotspotAutomationCoordinatorTest {
     fun auto_turn_off_callbacks_do_not_change_state_once_main_switch_flow_is_active() {
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = RecordingSettingsLauncher(),
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true }
         )
 
@@ -222,7 +222,7 @@ class HotspotAutomationCoordinatorTest {
         val launcher = RecordingSettingsLauncher()
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = launcher,
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true },
             maxAttempts = 3
         )
@@ -250,7 +250,7 @@ class HotspotAutomationCoordinatorTest {
     fun max_attempts_must_be_at_least_one() {
         HotspotAutomationCoordinator(
             settingsLauncher = RecordingSettingsLauncher(),
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true },
             maxAttempts = 0
         )
@@ -270,7 +270,7 @@ class HotspotAutomationCoordinatorTest {
     fun failure_after_retry_limit_moves_to_failed() {
         val coordinator = HotspotAutomationCoordinator(
             settingsLauncher = RecordingSettingsLauncher(),
-            hotspotStateReader = { false },
+            hotspotStateReader = { HotspotManager.HotspotState.DISABLED },
             accessibilityEnabled = { true },
             maxAttempts = 2
         )

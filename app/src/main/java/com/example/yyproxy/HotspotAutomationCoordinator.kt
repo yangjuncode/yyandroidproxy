@@ -6,7 +6,7 @@ interface HotspotSettingsLauncher {
 
 class HotspotAutomationCoordinator(
     private val settingsLauncher: HotspotSettingsLauncher,
-    private val hotspotStateReader: () -> Boolean,
+    private val hotspotStateReader: () -> HotspotManager.HotspotState,
     private val accessibilityEnabled: () -> Boolean,
     private val maxAttempts: Int = 3
 ) {
@@ -19,7 +19,9 @@ class HotspotAutomationCoordinator(
     fun snapshot(): HotspotAutomationSnapshot = snapshot
 
     fun requestAutomation(trigger: AutomationTrigger): Boolean {
-        if (!accessibilityEnabled() || hotspotStateReader()) return false
+        if (!accessibilityEnabled()) return false
+        val currentState = hotspotStateReader()
+        if (currentState == HotspotManager.HotspotState.ENABLED || currentState == HotspotManager.HotspotState.ENABLING) return false
 
         if (isRunActive()) {
             if (trigger == AutomationTrigger.MANUAL_REFRESH) {
@@ -42,14 +44,14 @@ class HotspotAutomationCoordinator(
     fun onHotspotMainPage(mainSwitchChecked: Boolean) {
         if (!isHotspotMainPageStage(snapshot.stage)) return
 
-        val observedHotspotEnabled = hotspotStateReader()
+        val observedState = hotspotStateReader()
         if (snapshot.stage == AutomationStage.VERIFYING) {
-            advanceVerification(observedHotspotEnabled)
+            advanceVerification(observedState)
             return
         }
 
-        if (mainSwitchChecked || observedHotspotEnabled) {
-            advanceVerification(observedHotspotEnabled)
+        if (mainSwitchChecked || observedState == HotspotManager.HotspotState.ENABLED || observedState == HotspotManager.HotspotState.ENABLING) {
+            advanceVerification(observedState)
             return
         }
 
@@ -77,7 +79,7 @@ class HotspotAutomationCoordinator(
             snapshot.stage != AutomationStage.VERIFYING
         ) return
 
-        advanceVerification(observedHotspotEnabled = hotspotStateReader())
+        advanceVerification(observedState = hotspotStateReader())
     }
 
     fun onStepTimeout() {
@@ -94,16 +96,24 @@ class HotspotAutomationCoordinator(
         settingsLauncher.launchHotspotSettings()
     }
 
-    private fun advanceVerification(observedHotspotEnabled: Boolean) {
+    private fun advanceVerification(observedState: HotspotManager.HotspotState) {
         if (snapshot.stage != AutomationStage.VERIFYING) {
             snapshot = snapshot.copy(stage = AutomationStage.VERIFYING, failureReason = null)
             return
         }
 
-        snapshot = if (observedHotspotEnabled) {
-            snapshot.copy(stage = AutomationStage.COMPLETED, failureReason = null)
-        } else {
-            snapshot.copy(stage = AutomationStage.VERIFYING, failureReason = null)
+        snapshot = when (observedState) {
+            HotspotManager.HotspotState.ENABLED -> {
+                snapshot.copy(stage = AutomationStage.COMPLETED, failureReason = null)
+            }
+            HotspotManager.HotspotState.ENABLING -> {
+                // Keep verifying, don't fail yet
+                snapshot.copy(stage = AutomationStage.VERIFYING, failureReason = null)
+            }
+            else -> {
+                // Either DISABLED, DISABLING, FAILED or UNKNOWN
+                snapshot.copy(stage = AutomationStage.VERIFYING, failureReason = null)
+            }
         }
     }
 
