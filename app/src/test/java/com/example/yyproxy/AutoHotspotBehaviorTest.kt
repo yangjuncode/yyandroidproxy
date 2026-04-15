@@ -99,4 +99,51 @@ class AutoHotspotBehaviorTest {
         assertFalse(result.pendingAccessibilityEnable)
         assertTrue(result.persistChange)
     }
+
+    @Test
+    fun app_visible_with_enabled_auto_hotspot_and_missing_accessibility_opens_settings_once() {
+        val result = AutoHotspotToggleCoordinator.onAppVisible(
+            currentlyEnabled = true,
+            support = AutoHotspotSupport(isSupported = true, requiresAccessibilityService = true),
+            pendingAccessibilityEnable = false,
+            accessibilityEnabled = false
+        )
+
+        assertTrue(result.enabled)
+        assertTrue(result.pendingAccessibilityEnable)
+        assertTrue(result.openAccessibilitySettings)
+        assertFalse(result.persistChange)
+        assertFalse(result.restartService)
+    }
+
+    @Test
+    fun app_visible_with_enabled_auto_hotspot_and_accessibility_restarts_service() {
+        val result = AutoHotspotToggleCoordinator.onAppVisible(
+            currentlyEnabled = true,
+            support = AutoHotspotSupport(isSupported = true, requiresAccessibilityService = true),
+            pendingAccessibilityEnable = false,
+            accessibilityEnabled = true
+        )
+
+        assertTrue(result.enabled)
+        assertFalse(result.pendingAccessibilityEnable)
+        assertFalse(result.openAccessibilitySettings)
+        assertFalse(result.persistChange)
+        assertTrue(result.restartService)
+    }
+
+    @Test
+    fun app_visible_does_not_reopen_settings_when_permission_is_still_pending() {
+        val result = AutoHotspotToggleCoordinator.onAppVisible(
+            currentlyEnabled = true,
+            support = AutoHotspotSupport(isSupported = true, requiresAccessibilityService = true),
+            pendingAccessibilityEnable = true,
+            accessibilityEnabled = false
+        )
+
+        assertTrue(result.enabled)
+        assertTrue(result.pendingAccessibilityEnable)
+        assertFalse(result.openAccessibilitySettings)
+        assertFalse(result.restartService)
+    }
 }

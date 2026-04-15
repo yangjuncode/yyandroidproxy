@@ -45,7 +45,7 @@ class HotspotAutomationCoordinator(
         }
 
         snapshot = snapshot.copy(
-            stage = AutomationStage.DISABLING_AUTO_TURNOFF,
+            stage = AutomationStage.ENABLING_HOTSPOT,
             failureReason = null
         )
     }

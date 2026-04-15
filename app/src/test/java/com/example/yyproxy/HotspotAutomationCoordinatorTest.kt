@@ -110,7 +110,7 @@ class HotspotAutomationCoordinatorTest {
 
         coordinator.requestAutomation(AutomationTrigger.BOOT)
         coordinator.onHotspotMainPage(mainSwitchChecked = false)
-        coordinator.onAutoTurnOffPage(autoTurnOffChecked = false)
+        coordinator.onHotspotSwitchClicked()
         hotspotEnabled = true
         coordinator.onHotspotMainPage(mainSwitchChecked = true)
         coordinator.onHotspotMainPage(mainSwitchChecked = true)
@@ -150,6 +150,7 @@ class HotspotAutomationCoordinatorTest {
 
         coordinator.requestAutomation(AutomationTrigger.BOOT)
         coordinator.onHotspotMainPage(mainSwitchChecked = false)
+        coordinator.onHotspotSwitchClicked()
         coordinator.onHotspotMainPage(mainSwitchChecked = true)
 
         assertEquals(AutomationStage.COMPLETED, coordinator.snapshot().stage)
@@ -184,7 +185,36 @@ class HotspotAutomationCoordinatorTest {
         coordinator.onHotspotMainPage(mainSwitchChecked = false)
         coordinator.onAutoTurnOffPage(autoTurnOffChecked = true)
 
-        assertEquals(AutomationStage.DISABLING_AUTO_TURNOFF, coordinator.snapshot().stage)
+        assertEquals(AutomationStage.ENABLING_HOTSPOT, coordinator.snapshot().stage)
+    }
+
+    @Test
+    fun unchecked_main_switch_moves_directly_to_enabling_state() {
+        val coordinator = HotspotAutomationCoordinator(
+            settingsLauncher = RecordingSettingsLauncher(),
+            hotspotStateReader = { false },
+            accessibilityEnabled = { true }
+        )
+
+        coordinator.requestAutomation(AutomationTrigger.BOOT)
+        coordinator.onHotspotMainPage(mainSwitchChecked = false)
+
+        assertEquals(AutomationStage.ENABLING_HOTSPOT, coordinator.snapshot().stage)
+    }
+
+    @Test
+    fun auto_turn_off_callbacks_do_not_change_state_once_main_switch_flow_is_active() {
+        val coordinator = HotspotAutomationCoordinator(
+            settingsLauncher = RecordingSettingsLauncher(),
+            hotspotStateReader = { false },
+            accessibilityEnabled = { true }
+        )
+
+        coordinator.requestAutomation(AutomationTrigger.BOOT)
+        coordinator.onHotspotMainPage(mainSwitchChecked = false)
+        coordinator.onAutoTurnOffPage(autoTurnOffChecked = true)
+
+        assertEquals(AutomationStage.ENABLING_HOTSPOT, coordinator.snapshot().stage)
     }
 
     @Test

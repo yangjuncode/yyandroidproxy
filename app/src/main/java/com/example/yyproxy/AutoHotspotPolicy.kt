@@ -109,4 +109,37 @@ object AutoHotspotToggleCoordinator {
             restartService = true
         )
     }
+
+    fun onAppVisible(
+        currentlyEnabled: Boolean,
+        support: AutoHotspotSupport,
+        pendingAccessibilityEnable: Boolean,
+        accessibilityEnabled: Boolean
+    ): AutoHotspotToggleResult {
+        if (!currentlyEnabled || !support.isSupported) {
+            return AutoHotspotToggleResult(
+                enabled = currentlyEnabled,
+                pendingAccessibilityEnable = false,
+                persistChange = false,
+                restartService = false
+            )
+        }
+
+        if (!accessibilityEnabled) {
+            return AutoHotspotToggleResult(
+                enabled = true,
+                pendingAccessibilityEnable = true,
+                persistChange = false,
+                restartService = false,
+                openAccessibilitySettings = !pendingAccessibilityEnable
+            )
+        }
+
+        return AutoHotspotToggleResult(
+            enabled = true,
+            pendingAccessibilityEnable = false,
+            persistChange = false,
+            restartService = true
+        )
+    }
 }

@@ -106,6 +106,35 @@ fun ProxyApp() {
         hasNotificationPermission = granted
     }
 
+    val applyAutoHotspotResult: (AutoHotspotToggleResult) -> Unit = { result ->
+        autoHotspotEnabled = result.enabled
+        pendingAccessibilityEnable = result.pendingAccessibilityEnable
+        if (result.persistChange) {
+            ProxySettings.setAutoHotspot(context, result.enabled)
+        }
+        if (result.restartService) {
+            startService(context)
+        }
+        if (result.openAccessibilitySettings) {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            Toast.makeText(
+                context,
+                "Please enable accessibility service to allow auto hotspot automation",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        if (result.showUnsupportedMessage) {
+            Toast.makeText(
+                context,
+                "Auto hotspot automation is supported only on compatible Samsung Android 10 devices",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     LaunchedEffect(Unit) {
         startService(context)
         if (platformSupport.requiresNotificationPermission && !hasNotificationPermission) {
@@ -135,27 +164,35 @@ fun ProxyApp() {
     }
 
     DisposableEffect(lifecycleOwner, context) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                hasNotificationPermission = isNotificationPermissionGranted(context)
-                runtimeStatuses = ProxyRuntimeStatusStore.loadStatuses(context)
-                accessibilityEnabled = AccessibilityServiceState.isAutomationServiceEnabled(context)
-                val result = AutoHotspotToggleCoordinator.onResume(
+        fun handleAppVisible() {
+            hasNotificationPermission = isNotificationPermissionGranted(context)
+            runtimeStatuses = ProxyRuntimeStatusStore.loadStatuses(context)
+            accessibilityEnabled = AccessibilityServiceState.isAutomationServiceEnabled(context)
+            val result = AutoHotspotToggleCoordinator.onResume(
+                currentlyEnabled = autoHotspotEnabled,
+                pendingAccessibilityEnable = pendingAccessibilityEnable,
+                accessibilityEnabled = accessibilityEnabled
+            )
+            applyAutoHotspotResult(result)
+            applyAutoHotspotResult(
+                AutoHotspotToggleCoordinator.onAppVisible(
                     currentlyEnabled = autoHotspotEnabled,
+                    support = autoHotspotSupport,
                     pendingAccessibilityEnable = pendingAccessibilityEnable,
                     accessibilityEnabled = accessibilityEnabled
                 )
-                autoHotspotEnabled = result.enabled
-                pendingAccessibilityEnable = result.pendingAccessibilityEnable
-                if (result.persistChange) {
-                    ProxySettings.setAutoHotspot(context, result.enabled)
-                }
-                if (result.restartService) {
-                    startService(context)
-                }
+            )
+        }
+
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                handleAppVisible()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            handleAppVisible()
+        }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
@@ -222,28 +259,7 @@ fun ProxyApp() {
                     support = autoHotspotSupport,
                     accessibilityEnabled = accessibilityEnabled
                 )
-                autoHotspotEnabled = result.enabled
-                pendingAccessibilityEnable = result.pendingAccessibilityEnable
-                if (result.persistChange) {
-                    ProxySettings.setAutoHotspot(context, result.enabled)
-                }
-                if (result.restartService) {
-                    startService(context)
-                }
-                if (result.openAccessibilitySettings) {
-                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(intent)
-                    Toast.makeText(context, "Please enable accessibility service to allow auto hotspot automation", Toast.LENGTH_LONG).show()
-                }
-                if (result.showUnsupportedMessage) {
-                    Toast.makeText(
-                        context,
-                        "Auto hotspot automation is supported only on compatible Samsung Android 10 devices",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
+                applyAutoHotspotResult(result)
             }
         )
     }

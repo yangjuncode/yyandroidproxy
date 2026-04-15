@@ -151,9 +151,11 @@ class ProxyService : Service() {
 
     private fun checkAndEnableHotspot() {
         val hotspotState = HotspotManager.getHotspotState(this)
+        val accessibilityEnabled = AccessibilityServiceState.isAutomationServiceEnabled(this)
+        val autoHotspotEnabled = ProxySettings.isAutoHotspotEnabled(this) && autoHotspotSupport.isSupported
         val shouldRequest = ProxyServiceAutomationDecision.shouldRequestAutomation(
-            autoHotspotEnabled = ProxySettings.isAutoHotspotEnabled(this) && autoHotspotSupport.isSupported,
-            accessibilityEnabled = AccessibilityServiceState.isAutomationServiceEnabled(this),
+            autoHotspotEnabled = autoHotspotEnabled,
+            accessibilityEnabled = accessibilityEnabled,
             hotspotState = hotspotState
         )
         if (!shouldRequest) {
@@ -192,10 +194,12 @@ class ProxyService : Service() {
                     when (hotspotAutomationCoordinator.snapshot().stage) {
                         AutomationStage.OPENING_HOTSPOT_SETTINGS,
                         AutomationStage.VERIFYING -> handleHotspotMainPageUpdate(
+                            service = service,
                             root = root,
                             className = className
                         )
                         AutomationStage.ENABLING_HOTSPOT -> handleEnableHotspotPageUpdate(
+                            service = service,
                             root = root,
                             className = className
                         )
@@ -203,20 +207,12 @@ class ProxyService : Service() {
                     }
                 }
             }
-            AutomationStage.DISABLING_AUTO_TURNOFF -> {
-                if (isAutoTurnOffPage(className = className, root = root)) {
-                    handleAutoTurnOffPageUpdate(
-                        service = service,
-                        root = root,
-                        className = className
-                    )
-                }
-            }
             else -> Unit
         }
     }
 
     private fun handleHotspotMainPageUpdate(
+        service: AccessibilityService,
         root: AccessibilityNodeInfo,
         className: String
     ) {
@@ -230,10 +226,20 @@ class ProxyService : Service() {
             allowSingleFallback = rootContainsAnyText(root, HOTSPOT_MAIN_PAGE_TEXT_HINTS)
         ) { mainSwitch ->
             hotspotAutomationCoordinator.onHotspotMainPage(mainSwitchChecked = mainSwitch.isChecked)
+            when (hotspotAutomationCoordinator.snapshot().stage) {
+                AutomationStage.ENABLING_HOTSPOT -> handleEnableHotspotPageUpdate(
+                    service = service,
+                    root = root,
+                    className = className
+                )
+                AutomationStage.COMPLETED -> service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+                else -> Unit
+            }
         }
     }
 
     private fun handleEnableHotspotPageUpdate(
+        service: AccessibilityService,
         root: AccessibilityNodeInfo,
         className: String
     ) {
@@ -252,38 +258,8 @@ class ProxyService : Service() {
                 return@withBestSwitch
             }
             hotspotAutomationCoordinator.onHotspotMainPage(mainSwitchChecked = true)
-        }
-    }
-
-    private fun handleAutoTurnOffPageUpdate(
-        service: AccessibilityService,
-        root: AccessibilityNodeInfo,
-        className: String
-    ) {
-        if (!isAutoTurnOffPage(className = className, root = root)) {
-            return
-        }
-        withBestSwitch(
-            root = root,
-            viewId = AUTO_TURNOFF_SWITCH_VIEW_ID,
-            rowTextHints = AUTO_TURNOFF_ROW_TEXT_HINTS,
-            allowSingleFallback = false
-        ) { autoTurnOffSwitch ->
-            val wasChecked = autoTurnOffSwitch.isChecked
-            hotspotAutomationCoordinator.onAutoTurnOffPage(autoTurnOffChecked = wasChecked)
-
-            var toggledOff = false
-            if (wasChecked && hotspotAutomationCoordinator.snapshot().stage == AutomationStage.DISABLING_AUTO_TURNOFF) {
-                if (autoTurnOffSwitch.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                    hotspotAutomationCoordinator.onAutoTurnOffPage(autoTurnOffChecked = false)
-                    toggledOff = true
-                }
-            }
-
-            val transitionedToEnableStage =
-                hotspotAutomationCoordinator.snapshot().stage == AutomationStage.ENABLING_HOTSPOT
-            if (transitionedToEnableStage && (toggledOff || !wasChecked)) {
-                service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            if (hotspotAutomationCoordinator.snapshot().stage == AutomationStage.COMPLETED) {
+                service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
             }
         }
     }
@@ -296,17 +272,6 @@ class ProxyService : Service() {
 
         val classMatched = containsAnyIgnoreCase(className, HOTSPOT_MAIN_PAGE_CLASS_HINTS)
         val pageTextMatched = rootContainsAnyText(root, HOTSPOT_MAIN_PAGE_TEXT_HINTS)
-        return classMatched || pageTextMatched
-    }
-
-    private fun isAutoTurnOffPage(className: String, root: AccessibilityNodeInfo): Boolean {
-        val hasAutoTurnOffSwitchNodes = hasNodeWithViewId(root, AUTO_TURNOFF_SWITCH_VIEW_ID)
-        if (!hasAutoTurnOffSwitchNodes) {
-            return false
-        }
-
-        val classMatched = containsAnyIgnoreCase(className, AUTO_TURNOFF_PAGE_CLASS_HINTS)
-        val pageTextMatched = rootContainsAnyText(root, AUTO_TURNOFF_ROW_TEXT_HINTS)
         return classMatched || pageTextMatched
     }
 
@@ -523,6 +488,7 @@ class ProxyService : Service() {
             "WifiApSettingsActivity"
         )
         private val HOTSPOT_MAIN_PAGE_TEXT_HINTS = listOf(
+            "wi-fi hotspot",
             "mobile hotspot",
             "hotspot and tethering",
             "tethering",
