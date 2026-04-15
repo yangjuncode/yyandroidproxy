@@ -997,3 +997,38 @@ If the Samsung settings page differs from the captured `adb` XML, update the exa
 git add docs/superpowers/plans/2026-04-15-samsung-hotspot-ui-automation.md
 git commit -m "docs: capture Samsung hotspot automation verification notes"
 ```
+
+#### Verification Notes (2026-04-15)
+
+Verified in this worktree/session:
+
+- `./gradlew :app:testDebugUnitTest` passed (`BUILD SUCCESSFUL`).
+- `./gradlew :app:compileDebugKotlin` passed (`BUILD SUCCESSFUL`).
+- Debug APK installability on connected `SM-N9600` was validated after removing an incompatible prior install:
+  - initial `:app:installDebug` failed with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
+  - `adb uninstall com.example.yyproxy`
+  - rerun `./gradlew :app:installDebug` succeeded on `SM-N9600`
+- Manifest/service wiring is visible on device:
+  - `adb shell dumpsys package com.example.yyproxy` shows `.HotspotAutomationAccessibilityService`
+  - service resolver includes `android.accessibilityservice.AccessibilityService` with `android.permission.BIND_ACCESSIBILITY_SERVICE`
+- Hotspot settings action resolves and launches:
+  - `adb shell cmd package resolve-activity --brief -a com.android.settings.WIFI_TETHER_SETTINGS`
+  - resolved to `com.android.settings/.Settings$WifiTetherSettingsActivity`
+  - `adb shell am start -W -a com.android.settings.WIFI_TETHER_SETTINGS` returned `Status: ok`
+- ADB enablement path for accessibility service was sanity-checked:
+  - `adb shell settings put secure enabled_accessibility_services com.example.yyproxy/com.example.yyproxy.HotspotAutomationAccessibilityService`
+  - `adb shell settings put secure accessibility_enabled 1`
+  - `adb shell dumpsys accessibility` and `adb shell dumpsys activity services com.example.yyproxy` show the service enabled/bound.
+
+Still requires manual confirmation on-device:
+
+- Turn on app auto-hotspot switch in app UI and validate user-facing flow.
+- Reboot behavior validation (auto hotspot re-enable after boot).
+- Manual hotspot-off recovery validation (service reopens hotspot).
+- Confirmation that Samsung hotspot advanced setting "Turn off hotspot automatically" is toggled off by automation.
+- Disable accessibility service and confirm the app surfaces missing prerequisite messaging in UI.
+
+Observed device-only deviation:
+
+- No Samsung hotspot-page resource-ID/title/click-order drift was confirmed in this run.
+- UI hierarchy capture was not reliable for hotspot-page content while the phone was locked (`uiautomator dump` returned lock-screen nodes), so page-structure validation remains manual.
