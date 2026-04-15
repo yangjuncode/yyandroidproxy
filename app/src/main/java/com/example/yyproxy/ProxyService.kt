@@ -70,7 +70,7 @@ class ProxyService : Service() {
 
         // 启动或更新热点检查任务
         handler.removeCallbacks(hotspotCheckRunnable)
-        if (ProxySettings.isAutoHotspotEnabled(this) && autoHotspotSupport.canProgrammaticallyEnable) {
+        if (ProxySettings.isAutoHotspotEnabled(this) && autoHotspotSupport.isSupported) {
             handler.post(hotspotCheckRunnable)
         }
         
@@ -78,7 +78,7 @@ class ProxyService : Service() {
     }
 
     private fun checkAndEnableHotspot() {
-        if (!ProxySettings.isAutoHotspotEnabled(this) || !autoHotspotSupport.canProgrammaticallyEnable) {
+        if (!ProxySettings.isAutoHotspotEnabled(this) || !autoHotspotSupport.isSupported) {
             return
         }
 
@@ -87,7 +87,7 @@ class ProxyService : Service() {
                 Log.d("ProxyService", "Auto hotspot enabled successfully")
             HotspotManager.EnableResult.ALREADY_ENABLED -> Unit
             HotspotManager.EnableResult.PERMISSION_REQUIRED ->
-                Log.w("ProxyService", "Auto hotspot is enabled in app settings but WRITE_SETTINGS is not granted")
+                Log.w("ProxyService", "Auto hotspot is enabled in app settings but accessibility automation prerequisites are not met")
             HotspotManager.EnableResult.NOT_SUPPORTED ->
                 Log.w("ProxyService", "Auto hotspot is not supported on this Android version")
             HotspotManager.EnableResult.FAILED ->

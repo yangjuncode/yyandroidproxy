@@ -9,7 +9,6 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -81,10 +80,10 @@ fun ProxyApp() {
     var runtimeStatuses by remember { mutableStateOf(ProxyRuntimeStatusStore.loadStatuses(context)) }
     var autoHotspotEnabled by remember {
         mutableStateOf(
-            ProxySettings.isAutoHotspotEnabled(context) && autoHotspotSupport.canProgrammaticallyEnable
+            ProxySettings.isAutoHotspotEnabled(context) && autoHotspotSupport.isSupported
         )
     }
-    var pendingAutoHotspotPermissionRequest by remember { mutableStateOf(false) }
+    var pendingAccessibilityEnable by remember { mutableStateOf(false) }
 
     // editingProxy 不为空表示正在编辑已有规则。
     var editingProxy by remember { mutableStateOf<ProxyConfig?>(null) }
@@ -133,11 +132,11 @@ fun ProxyApp() {
                 runtimeStatuses = ProxyRuntimeStatusStore.loadStatuses(context)
                 val result = AutoHotspotToggleCoordinator.onResume(
                     currentlyEnabled = autoHotspotEnabled,
-                    pendingPermissionRequest = pendingAutoHotspotPermissionRequest,
-                    canWriteSettings = Settings.System.canWrite(context)
+                    pendingAccessibilityEnable = pendingAccessibilityEnable,
+                    accessibilityEnabled = AccessibilityServiceState.isHotspotAutomationServiceEnabled(context)
                 )
                 autoHotspotEnabled = result.enabled
-                pendingAutoHotspotPermissionRequest = result.pendingPermissionRequest
+                pendingAccessibilityEnable = result.pendingAccessibilityEnable
                 if (result.persistChange) {
                     ProxySettings.setAutoHotspot(context, result.enabled)
                 }
@@ -204,33 +203,32 @@ fun ProxyApp() {
                 startService(context)
             },
             autoHotspotEnabled = autoHotspotEnabled,
-            autoHotspotSupported = autoHotspotSupport.canProgrammaticallyEnable,
+            autoHotspotSupported = autoHotspotSupport.isSupported,
             onAutoHotspotToggle = { enabled ->
                 val result = AutoHotspotToggleCoordinator.onToggleRequested(
                     requestedEnabled = enabled,
-                    canProgrammaticallyEnable = autoHotspotSupport.canProgrammaticallyEnable,
-                    canWriteSettings = Settings.System.canWrite(context)
+                    support = autoHotspotSupport,
+                    accessibilityEnabled = AccessibilityServiceState.isHotspotAutomationServiceEnabled(context)
                 )
                 autoHotspotEnabled = result.enabled
-                pendingAutoHotspotPermissionRequest = result.pendingPermissionRequest
+                pendingAccessibilityEnable = result.pendingAccessibilityEnable
                 if (result.persistChange) {
                     ProxySettings.setAutoHotspot(context, result.enabled)
                 }
                 if (result.restartService) {
                     startService(context)
                 }
-                if (result.openWriteSettings) {
-                    val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
-                        data = Uri.parse("package:${context.packageName}")
+                if (result.openAccessibilitySettings) {
+                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                     context.startActivity(intent)
-                    Toast.makeText(context, "Please grant Write Settings permission to enable auto hotspot", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "Please enable accessibility service to allow auto hotspot automation", Toast.LENGTH_LONG).show()
                 }
                 if (result.showUnsupportedMessage) {
                     Toast.makeText(
                         context,
-                        "Auto hotspot is only supported on Android 7.x and below",
+                        "Auto hotspot automation is only supported on Samsung SM-N9600 (Android 10)",
                         Toast.LENGTH_LONG
                     ).show()
                 }

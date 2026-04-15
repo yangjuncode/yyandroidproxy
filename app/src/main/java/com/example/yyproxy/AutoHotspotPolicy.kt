@@ -3,67 +3,77 @@ package com.example.yyproxy
 import android.os.Build
 
 data class AutoHotspotSupport(
-    val canProgrammaticallyEnable: Boolean,
-    val requiresWriteSettingsPermission: Boolean
+    val isSupported: Boolean,
+    val requiresAccessibilityService: Boolean
 ) {
     companion object {
-        fun forSdk(sdk: Int): AutoHotspotSupport {
-            val canProgrammaticallyEnable = sdk < Build.VERSION_CODES.O
+        fun forDevice(manufacturer: String, model: String, sdk: Int): AutoHotspotSupport {
+            val isSupported = manufacturer.equals("samsung", ignoreCase = true) &&
+                model == "SM-N9600" &&
+                sdk == 29
+
             return AutoHotspotSupport(
-                canProgrammaticallyEnable = canProgrammaticallyEnable,
-                requiresWriteSettingsPermission = canProgrammaticallyEnable
+                isSupported = isSupported,
+                requiresAccessibilityService = isSupported
             )
         }
+
+        fun forSdk(sdk: Int): AutoHotspotSupport =
+            forDevice(
+                manufacturer = Build.MANUFACTURER,
+                model = Build.MODEL,
+                sdk = sdk
+            )
     }
 }
 
 data class AutoHotspotToggleResult(
     val enabled: Boolean,
-    val pendingPermissionRequest: Boolean,
+    val pendingAccessibilityEnable: Boolean,
     val persistChange: Boolean,
     val restartService: Boolean,
-    val openWriteSettings: Boolean = false,
+    val openAccessibilitySettings: Boolean = false,
     val showUnsupportedMessage: Boolean = false
 )
 
 object AutoHotspotToggleCoordinator {
     fun onToggleRequested(
         requestedEnabled: Boolean,
-        canProgrammaticallyEnable: Boolean,
-        canWriteSettings: Boolean
+        support: AutoHotspotSupport,
+        accessibilityEnabled: Boolean
     ): AutoHotspotToggleResult {
         if (!requestedEnabled) {
             return AutoHotspotToggleResult(
                 enabled = false,
-                pendingPermissionRequest = false,
+                pendingAccessibilityEnable = false,
                 persistChange = true,
                 restartService = true
             )
         }
 
-        if (!canProgrammaticallyEnable) {
+        if (!support.isSupported) {
             return AutoHotspotToggleResult(
                 enabled = false,
-                pendingPermissionRequest = false,
+                pendingAccessibilityEnable = false,
                 persistChange = false,
                 restartService = false,
                 showUnsupportedMessage = true
             )
         }
 
-        if (!canWriteSettings) {
+        if (!accessibilityEnabled) {
             return AutoHotspotToggleResult(
                 enabled = false,
-                pendingPermissionRequest = true,
+                pendingAccessibilityEnable = true,
                 persistChange = false,
                 restartService = false,
-                openWriteSettings = true
+                openAccessibilitySettings = true
             )
         }
 
         return AutoHotspotToggleResult(
             enabled = true,
-            pendingPermissionRequest = false,
+            pendingAccessibilityEnable = false,
             persistChange = true,
             restartService = true
         )
@@ -71,22 +81,22 @@ object AutoHotspotToggleCoordinator {
 
     fun onResume(
         currentlyEnabled: Boolean,
-        pendingPermissionRequest: Boolean,
-        canWriteSettings: Boolean
+        pendingAccessibilityEnable: Boolean,
+        accessibilityEnabled: Boolean
     ): AutoHotspotToggleResult {
-        if (!pendingPermissionRequest) {
+        if (!pendingAccessibilityEnable) {
             return AutoHotspotToggleResult(
                 enabled = currentlyEnabled,
-                pendingPermissionRequest = false,
+                pendingAccessibilityEnable = false,
                 persistChange = false,
                 restartService = false
             )
         }
 
-        if (!canWriteSettings) {
+        if (!accessibilityEnabled) {
             return AutoHotspotToggleResult(
                 enabled = currentlyEnabled,
-                pendingPermissionRequest = true,
+                pendingAccessibilityEnable = true,
                 persistChange = false,
                 restartService = false
             )
@@ -94,7 +104,7 @@ object AutoHotspotToggleCoordinator {
 
         return AutoHotspotToggleResult(
             enabled = true,
-            pendingPermissionRequest = false,
+            pendingAccessibilityEnable = false,
             persistChange = true,
             restartService = true
         )

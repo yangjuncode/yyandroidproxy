@@ -29,7 +29,7 @@ object HotspotManager {
      * 检查移动热点是否已开启。
      */
     fun isHotspotEnabled(context: Context): Boolean {
-        if (!AutoHotspotSupport.forSdk(Build.VERSION.SDK_INT).canProgrammaticallyEnable) {
+        if (!AutoHotspotSupport.forSdk(Build.VERSION.SDK_INT).isSupported) {
             return false
         }
 
@@ -51,7 +51,7 @@ object HotspotManager {
     @Suppress("DEPRECATION")
     fun enableHotspot(context: Context): EnableResult {
         val support = AutoHotspotSupport.forSdk(Build.VERSION.SDK_INT)
-        if (!support.canProgrammaticallyEnable) {
+        if (!support.isSupported) {
             return EnableResult.NOT_SUPPORTED
         }
         if (!Settings.System.canWrite(context)) {

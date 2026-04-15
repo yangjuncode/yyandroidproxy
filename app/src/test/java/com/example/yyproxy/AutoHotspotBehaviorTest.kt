@@ -7,60 +7,96 @@ import org.junit.Test
 class AutoHotspotBehaviorTest {
 
     @Test
-    fun sdk25_supports_legacy_auto_hotspot_automation() {
-        val support = AutoHotspotSupport.forSdk(25)
+    fun samsung_note9_android10_supports_accessibility_automation() {
+        val support = AutoHotspotSupport.forDevice(
+            manufacturer = "samsung",
+            model = "SM-N9600",
+            sdk = 29
+        )
 
-        assertTrue(support.canProgrammaticallyEnable)
-        assertTrue(support.requiresWriteSettingsPermission)
+        assertTrue(support.isSupported)
+        assertTrue(support.requiresAccessibilityService)
     }
 
     @Test
-    fun sdk26_and_above_do_not_support_programmatic_auto_hotspot() {
-        val support = AutoHotspotSupport.forSdk(26)
+    fun non_target_devices_are_not_supported() {
+        val support = AutoHotspotSupport.forDevice(
+            manufacturer = "google",
+            model = "Pixel 4",
+            sdk = 29
+        )
 
-        assertFalse(support.canProgrammaticallyEnable)
-        assertFalse(support.requiresWriteSettingsPermission)
+        assertFalse(support.isSupported)
     }
 
     @Test
-    fun enabling_without_write_settings_requests_permission_and_keeps_setting_disabled() {
+    fun enabling_without_accessibility_opens_accessibility_settings_without_persisting() {
         val result = AutoHotspotToggleCoordinator.onToggleRequested(
             requestedEnabled = true,
-            canProgrammaticallyEnable = true,
-            canWriteSettings = false
+            support = AutoHotspotSupport(isSupported = true, requiresAccessibilityService = true),
+            accessibilityEnabled = false
         )
 
         assertFalse(result.enabled)
-        assertTrue(result.pendingPermissionRequest)
-        assertTrue(result.openWriteSettings)
+        assertTrue(result.pendingAccessibilityEnable)
+        assertTrue(result.openAccessibilitySettings)
         assertFalse(result.persistChange)
     }
 
     @Test
-    fun resuming_after_permission_grant_completes_pending_enable() {
-        val result = AutoHotspotToggleCoordinator.onResume(
-            currentlyEnabled = false,
-            pendingPermissionRequest = true,
-            canWriteSettings = true
+    fun enabling_with_accessibility_persists_and_restarts_service() {
+        val result = AutoHotspotToggleCoordinator.onToggleRequested(
+            requestedEnabled = true,
+            support = AutoHotspotSupport(isSupported = true, requiresAccessibilityService = true),
+            accessibilityEnabled = true
         )
 
         assertTrue(result.enabled)
-        assertFalse(result.pendingPermissionRequest)
         assertTrue(result.persistChange)
+        assertTrue(result.restartService)
     }
 
     @Test
-    fun enabling_on_unsupported_platform_shows_unsupported_without_persisting() {
+    fun disabling_persists_disabled_state_and_restarts_service() {
         val result = AutoHotspotToggleCoordinator.onToggleRequested(
-            requestedEnabled = true,
-            canProgrammaticallyEnable = false,
-            canWriteSettings = false
+            requestedEnabled = false,
+            support = AutoHotspotSupport(isSupported = true, requiresAccessibilityService = true),
+            accessibilityEnabled = true
         )
 
         assertFalse(result.enabled)
-        assertFalse(result.pendingPermissionRequest)
-        assertFalse(result.openWriteSettings)
-        assertTrue(result.showUnsupportedMessage)
+        assertFalse(result.pendingAccessibilityEnable)
+        assertTrue(result.persistChange)
+        assertTrue(result.restartService)
+        assertFalse(result.openAccessibilitySettings)
+    }
+
+    @Test
+    fun enabling_on_unsupported_device_shows_unsupported_message_without_persisting() {
+        val result = AutoHotspotToggleCoordinator.onToggleRequested(
+            requestedEnabled = true,
+            support = AutoHotspotSupport(isSupported = false, requiresAccessibilityService = false),
+            accessibilityEnabled = true
+        )
+
+        assertFalse(result.enabled)
+        assertFalse(result.pendingAccessibilityEnable)
         assertFalse(result.persistChange)
+        assertFalse(result.restartService)
+        assertTrue(result.showUnsupportedMessage)
+        assertFalse(result.openAccessibilitySettings)
+    }
+
+    @Test
+    fun on_resume_enables_toggle_after_accessibility_is_granted() {
+        val result = AutoHotspotToggleCoordinator.onResume(
+            currentlyEnabled = false,
+            pendingAccessibilityEnable = true,
+            accessibilityEnabled = true
+        )
+
+        assertTrue(result.enabled)
+        assertFalse(result.pendingAccessibilityEnable)
+        assertTrue(result.persistChange)
     }
 }
