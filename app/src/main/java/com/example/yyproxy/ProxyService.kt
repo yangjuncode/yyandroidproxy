@@ -1,17 +1,21 @@
 package com.example.yyproxy
 
+import android.accessibilityservice.AccessibilityService
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.app.NotificationCompat
+import java.util.Locale
 
 /**
  * 前台代理服务。
@@ -20,19 +24,84 @@ import androidx.core.app.NotificationCompat
  * 1. 从持久化配置中读取启用的规则。
  * 2. 为每条规则启动或停止一个 NIO 端口转发器。
  * 3. 通过前台通知让系统尽量长期保活服务。
- * 4. 如果开启了自动热点选项，则定期检查并开启移动热点。
+ * 4. 如果开启了自动热点选项，则定期检查并请求无障碍自动化流程。
  */
 class ProxyService : Service() {
 
     private val channelId = "ProxyServiceChannel"
-    private val autoHotspotSupport = AutoHotspotSupport.forSdk(Build.VERSION.SDK_INT)
+    private val autoHotspotSupport = AutoHotspotSupport.forDevice(
+        manufacturer = Build.MANUFACTURER,
+        model = Build.MODEL,
+        sdk = Build.VERSION.SDK_INT
+    )
+    @Volatile
+    private var isShuttingDown = false
     private val handler = Handler(Looper.getMainLooper())
     private val hotspotCheckInterval = 10 * 60 * 1000L // 10 minutes
+    private val automationStepTimeoutMs = 20 * 1000L
 
     private val hotspotCheckRunnable = object : Runnable {
         override fun run() {
             checkAndEnableHotspot()
             handler.postDelayed(this, hotspotCheckInterval)
+        }
+    }
+
+    private val automationStepTimeoutRunnable = object : Runnable {
+        override fun run() {
+            hotspotAutomationCoordinator.onStepTimeout()
+            syncAutomationStepTimeout()
+        }
+    }
+
+    private val hotspotAutomationCoordinator = HotspotAutomationCoordinator(
+        settingsLauncher = object : HotspotSettingsLauncher {
+            override fun launchHotspotSettings() {
+                val intent = Intent(HOTSPOT_SETTINGS_ACTION).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                if (intent.resolveActivity(packageManager) == null) {
+                    handleHotspotSettingsLaunchFailure("No activity can handle hotspot settings intent")
+                    return
+                }
+                try {
+                    startActivity(intent)
+                } catch (e: ActivityNotFoundException) {
+                    handleHotspotSettingsLaunchFailure("Hotspot settings activity is unavailable", e)
+                } catch (e: RuntimeException) {
+                    handleHotspotSettingsLaunchFailure("Failed to launch hotspot settings", e)
+                }
+            }
+        },
+        hotspotStateReader = { HotspotManager.getHotspotState(this) == HotspotManager.HotspotState.ENABLED },
+        accessibilityEnabled = { AccessibilityServiceState.isAutomationServiceEnabled(this) }
+    )
+
+    private val runtimeBridge = object : UiAutomationCoordinatorBridge {
+        override fun handleWindowUpdate(
+            service: AccessibilityService,
+            root: AccessibilityNodeInfo,
+            packageName: String,
+            className: String
+        ) {
+            if (packageName != SETTINGS_PACKAGE_NAME) {
+                return
+            }
+            val rootSnapshot = AccessibilityNodeInfo.obtain(root)
+            val posted = handler.post {
+                try {
+                    if (isShuttingDown) {
+                        return@post
+                    }
+                    handleAutomationWindowUpdate(service = service, root = rootSnapshot, className = className)
+                    syncAutomationStepTimeout()
+                } finally {
+                    rootSnapshot.recycle()
+                }
+            }
+            if (!posted) {
+                rootSnapshot.recycle()
+            }
         }
     }
 
@@ -59,7 +128,9 @@ class ProxyService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isShuttingDown = false
         createNotificationChannel()
+        HotspotAutomationRuntime.coordinator = runtimeBridge
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -73,26 +144,301 @@ class ProxyService : Service() {
         if (ProxySettings.isAutoHotspotEnabled(this) && autoHotspotSupport.isSupported) {
             handler.post(hotspotCheckRunnable)
         }
-        
+        syncAutomationStepTimeout()
+
         return START_STICKY
     }
 
     private fun checkAndEnableHotspot() {
-        if (!ProxySettings.isAutoHotspotEnabled(this) || !autoHotspotSupport.isSupported) {
+        val hotspotState = HotspotManager.getHotspotState(this)
+        val shouldRequest = ProxyServiceAutomationDecision.shouldRequestAutomation(
+            autoHotspotEnabled = ProxySettings.isAutoHotspotEnabled(this) && autoHotspotSupport.isSupported,
+            accessibilityEnabled = AccessibilityServiceState.isAutomationServiceEnabled(this),
+            hotspotState = hotspotState
+        )
+        if (!shouldRequest) {
+            syncAutomationStepTimeout()
             return
         }
 
-        when (HotspotManager.enableHotspot(this)) {
-            HotspotManager.EnableResult.ENABLED ->
-                Log.d("ProxyService", "Auto hotspot enabled successfully")
-            HotspotManager.EnableResult.ALREADY_ENABLED -> Unit
-            HotspotManager.EnableResult.PERMISSION_REQUIRED ->
-                Log.w("ProxyService", "Auto hotspot is enabled in app settings but accessibility automation prerequisites are not met")
-            HotspotManager.EnableResult.NOT_SUPPORTED ->
-                Log.w("ProxyService", "Auto hotspot is not supported on this Android version")
-            HotspotManager.EnableResult.FAILED ->
-                Log.w("ProxyService", "Auto hotspot enable attempt failed")
+        if (hotspotAutomationCoordinator.requestAutomation(AutomationTrigger.PERIODIC_CHECK)) {
+            Log.d("ProxyService", "Requested Samsung hotspot accessibility automation")
         }
+        syncAutomationStepTimeout()
+    }
+
+    private fun handleHotspotSettingsLaunchFailure(message: String, error: Throwable? = null) {
+        if (error == null) {
+            Log.w("ProxyService", message)
+        } else {
+            Log.w("ProxyService", message, error)
+        }
+        handler.post {
+            hotspotAutomationCoordinator.onStepTimeout()
+            syncAutomationStepTimeout()
+        }
+    }
+
+    private fun handleAutomationWindowUpdate(
+        service: AccessibilityService,
+        root: AccessibilityNodeInfo,
+        className: String
+    ) {
+        when (hotspotAutomationCoordinator.snapshot().stage) {
+            AutomationStage.OPENING_HOTSPOT_SETTINGS,
+            AutomationStage.ENABLING_HOTSPOT,
+            AutomationStage.VERIFYING -> {
+                if (isHotspotMainPage(className = className, root = root)) {
+                    when (hotspotAutomationCoordinator.snapshot().stage) {
+                        AutomationStage.OPENING_HOTSPOT_SETTINGS,
+                        AutomationStage.VERIFYING -> handleHotspotMainPageUpdate(
+                            root = root,
+                            className = className
+                        )
+                        AutomationStage.ENABLING_HOTSPOT -> handleEnableHotspotPageUpdate(
+                            root = root,
+                            className = className
+                        )
+                        else -> Unit
+                    }
+                }
+            }
+            AutomationStage.DISABLING_AUTO_TURNOFF -> {
+                if (isAutoTurnOffPage(className = className, root = root)) {
+                    handleAutoTurnOffPageUpdate(
+                        service = service,
+                        root = root,
+                        className = className
+                    )
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun handleHotspotMainPageUpdate(
+        root: AccessibilityNodeInfo,
+        className: String
+    ) {
+        if (!isHotspotMainPage(className = className, root = root)) {
+            return
+        }
+        withBestSwitch(
+            root = root,
+            viewId = HOTSPOT_MAIN_SWITCH_VIEW_ID,
+            rowTextHints = HOTSPOT_MAIN_ROW_TEXT_HINTS,
+            allowSingleFallback = rootContainsAnyText(root, HOTSPOT_MAIN_PAGE_TEXT_HINTS)
+        ) { mainSwitch ->
+            hotspotAutomationCoordinator.onHotspotMainPage(mainSwitchChecked = mainSwitch.isChecked)
+        }
+    }
+
+    private fun handleEnableHotspotPageUpdate(
+        root: AccessibilityNodeInfo,
+        className: String
+    ) {
+        if (!isHotspotMainPage(className = className, root = root)) {
+            return
+        }
+        withBestSwitch(
+            root = root,
+            viewId = HOTSPOT_MAIN_SWITCH_VIEW_ID,
+            rowTextHints = HOTSPOT_MAIN_ROW_TEXT_HINTS,
+            allowSingleFallback = rootContainsAnyText(root, HOTSPOT_MAIN_PAGE_TEXT_HINTS)
+        ) { mainSwitch ->
+            if (!mainSwitch.isChecked) {
+                mainSwitch.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                hotspotAutomationCoordinator.onHotspotSwitchClicked()
+                return@withBestSwitch
+            }
+            hotspotAutomationCoordinator.onHotspotMainPage(mainSwitchChecked = true)
+        }
+    }
+
+    private fun handleAutoTurnOffPageUpdate(
+        service: AccessibilityService,
+        root: AccessibilityNodeInfo,
+        className: String
+    ) {
+        if (!isAutoTurnOffPage(className = className, root = root)) {
+            return
+        }
+        withBestSwitch(
+            root = root,
+            viewId = AUTO_TURNOFF_SWITCH_VIEW_ID,
+            rowTextHints = AUTO_TURNOFF_ROW_TEXT_HINTS,
+            allowSingleFallback = false
+        ) { autoTurnOffSwitch ->
+            val wasChecked = autoTurnOffSwitch.isChecked
+            hotspotAutomationCoordinator.onAutoTurnOffPage(autoTurnOffChecked = wasChecked)
+
+            var toggledOff = false
+            if (wasChecked && hotspotAutomationCoordinator.snapshot().stage == AutomationStage.DISABLING_AUTO_TURNOFF) {
+                if (autoTurnOffSwitch.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    hotspotAutomationCoordinator.onAutoTurnOffPage(autoTurnOffChecked = false)
+                    toggledOff = true
+                }
+            }
+
+            val transitionedToEnableStage =
+                hotspotAutomationCoordinator.snapshot().stage == AutomationStage.ENABLING_HOTSPOT
+            if (transitionedToEnableStage && (toggledOff || !wasChecked)) {
+                service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            }
+        }
+    }
+
+    private fun isHotspotMainPage(className: String, root: AccessibilityNodeInfo): Boolean {
+        val hasHotspotSwitchNodes = hasNodeWithViewId(root, HOTSPOT_MAIN_SWITCH_VIEW_ID)
+        if (!hasHotspotSwitchNodes) {
+            return false
+        }
+
+        val classMatched = containsAnyIgnoreCase(className, HOTSPOT_MAIN_PAGE_CLASS_HINTS)
+        val pageTextMatched = rootContainsAnyText(root, HOTSPOT_MAIN_PAGE_TEXT_HINTS)
+        return classMatched || pageTextMatched
+    }
+
+    private fun isAutoTurnOffPage(className: String, root: AccessibilityNodeInfo): Boolean {
+        val hasAutoTurnOffSwitchNodes = hasNodeWithViewId(root, AUTO_TURNOFF_SWITCH_VIEW_ID)
+        if (!hasAutoTurnOffSwitchNodes) {
+            return false
+        }
+
+        val classMatched = containsAnyIgnoreCase(className, AUTO_TURNOFF_PAGE_CLASS_HINTS)
+        val pageTextMatched = rootContainsAnyText(root, AUTO_TURNOFF_ROW_TEXT_HINTS)
+        return classMatched || pageTextMatched
+    }
+
+    private inline fun withBestSwitch(
+        root: AccessibilityNodeInfo,
+        viewId: String,
+        rowTextHints: List<String>,
+        allowSingleFallback: Boolean,
+        action: (AccessibilityNodeInfo) -> Unit
+    ): Boolean {
+        val candidates = root.findAccessibilityNodeInfosByViewId(viewId)
+        if (candidates.isEmpty()) {
+            return false
+        }
+        return try {
+            val switchNode = selectSwitchByContext(
+                candidates = candidates,
+                rowTextHints = rowTextHints,
+                allowSingleFallback = allowSingleFallback
+            ) ?: return false
+            action(switchNode)
+            true
+        } finally {
+            recycleNodes(candidates)
+        }
+    }
+
+    private fun hasNodeWithViewId(root: AccessibilityNodeInfo, viewId: String): Boolean {
+        val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
+        return try {
+            nodes.isNotEmpty()
+        } finally {
+            recycleNodes(nodes)
+        }
+    }
+
+    private fun selectSwitchByContext(
+        candidates: List<AccessibilityNodeInfo>,
+        rowTextHints: List<String>,
+        allowSingleFallback: Boolean
+    ): AccessibilityNodeInfo? {
+        val bestCandidate = candidates
+            .map { node ->
+                val contextText = buildNodeContextText(node)
+                val hintMatches = rowTextHints.count { hint ->
+                    contextText.contains(hint.lowercase(Locale.ROOT))
+                }
+                val score = (hintMatches * 10) + if (node.isCheckable || node.isClickable) 1 else 0
+                node to score
+            }
+            .maxByOrNull { it.second }
+
+        if (bestCandidate != null && bestCandidate.second > 0) {
+            return bestCandidate.first
+        }
+        if (allowSingleFallback && candidates.size == 1) {
+            return candidates.first()
+        }
+        return null
+    }
+
+    private fun buildNodeContextText(node: AccessibilityNodeInfo): String {
+        val parts = mutableListOf<String>()
+        appendNodeText(parts, node, maxDepth = 1, recycleNode = false)
+        var ancestor = node.parent
+        var depth = 0
+        while (ancestor != null && depth < CONTEXT_ANCESTOR_DEPTH) {
+            val currentAncestor = ancestor
+            var nextAncestor: AccessibilityNodeInfo? = null
+            try {
+                appendNodeText(parts, currentAncestor, maxDepth = 1, recycleNode = false)
+                nextAncestor = currentAncestor.parent
+            } finally {
+                currentAncestor.recycle()
+            }
+            ancestor = nextAncestor
+            depth += 1
+        }
+        return parts.joinToString(" ").lowercase(Locale.ROOT)
+    }
+
+    private fun appendNodeText(
+        parts: MutableList<String>,
+        node: AccessibilityNodeInfo?,
+        maxDepth: Int,
+        recycleNode: Boolean
+    ) {
+        if (node == null || maxDepth < 0) {
+            return
+        }
+        try {
+            node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let(parts::add)
+            node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let(parts::add)
+            if (maxDepth == 0) {
+                return
+            }
+            for (index in 0 until node.childCount) {
+                appendNodeText(parts, node.getChild(index), maxDepth - 1, recycleNode = true)
+            }
+        } finally {
+            if (recycleNode) {
+                node.recycle()
+            }
+        }
+    }
+
+    private fun rootContainsAnyText(root: AccessibilityNodeInfo, hints: List<String>): Boolean {
+        val parts = mutableListOf<String>()
+        appendNodeText(parts, root, maxDepth = ROOT_TEXT_SCAN_DEPTH, recycleNode = false)
+        val allText = parts.joinToString(" ").lowercase(Locale.ROOT)
+        return hints.any { hint -> allText.contains(hint.lowercase(Locale.ROOT)) }
+    }
+
+    private fun recycleNodes(nodes: List<AccessibilityNodeInfo>) {
+        nodes.forEach { it.recycle() }
+    }
+
+    private fun containsAnyIgnoreCase(value: String, hints: List<String>): Boolean {
+        return hints.any { hint -> value.contains(hint, ignoreCase = true) }
+    }
+
+    private fun syncAutomationStepTimeout() {
+        handler.removeCallbacks(automationStepTimeoutRunnable)
+        if (isAutomationRunActive(hotspotAutomationCoordinator.snapshot().stage)) {
+            handler.postDelayed(automationStepTimeoutRunnable, automationStepTimeoutMs)
+        }
+    }
+
+    private fun isAutomationRunActive(stage: AutomationStage): Boolean {
+        return stage != AutomationStage.IDLE &&
+            stage != AutomationStage.COMPLETED &&
+            stage != AutomationStage.FAILED
     }
 
     private fun updateTasks() {
@@ -108,7 +454,12 @@ class ProxyService : Service() {
 
     override fun onDestroy() {
         // Service 销毁时兜底关闭所有正在运行的转发器，防止残留端口监听。
+        isShuttingDown = true
         handler.removeCallbacks(hotspotCheckRunnable)
+        handler.removeCallbacks(automationStepTimeoutRunnable)
+        if (HotspotAutomationRuntime.coordinator === runtimeBridge) {
+            HotspotAutomationRuntime.coordinator = null
+        }
         taskCoordinator.stopAll()
         super.onDestroy()
     }
@@ -159,5 +510,40 @@ class ProxyService : Service() {
     companion object {
         const val ACTION_PROXY_STATUS_CHANGED = "com.example.yyproxy.ACTION_PROXY_STATUS_CHANGED"
         private const val NOTIFICATION_ID = 1
+        private const val SETTINGS_PACKAGE_NAME = "com.android.settings"
+        private const val HOTSPOT_SETTINGS_ACTION = "com.android.settings.WIFI_TETHER_SETTINGS"
+        private const val HOTSPOT_MAIN_SWITCH_VIEW_ID = "com.android.settings:id/switch_widget"
+        private const val AUTO_TURNOFF_SWITCH_VIEW_ID = "android:id/switch_widget"
+        private const val CONTEXT_ANCESTOR_DEPTH = 3
+        private const val ROOT_TEXT_SCAN_DEPTH = 5
+
+        private val HOTSPOT_MAIN_PAGE_CLASS_HINTS = listOf(
+            "WifiTetherSettingsActivity",
+            "WifiTetherSettings",
+            "WifiApSettingsActivity"
+        )
+        private val HOTSPOT_MAIN_PAGE_TEXT_HINTS = listOf(
+            "mobile hotspot",
+            "hotspot and tethering",
+            "tethering",
+            "移动热点",
+            "热点和网络共享"
+        )
+        private val HOTSPOT_MAIN_ROW_TEXT_HINTS = listOf(
+            "mobile hotspot",
+            "hotspot",
+            "移动热点"
+        )
+        private val AUTO_TURNOFF_PAGE_CLASS_HINTS = listOf(
+            "WifiApTimeoutSettings",
+            "WifiApAutoDisableSettings",
+            "WifiTetherSettingsActivity"
+        )
+        private val AUTO_TURNOFF_ROW_TEXT_HINTS = listOf(
+            "turn off hotspot automatically",
+            "turn off automatically",
+            "自动关闭热点",
+            "自动关闭"
+        )
     }
 }

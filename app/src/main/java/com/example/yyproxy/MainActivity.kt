@@ -74,7 +74,16 @@ fun ProxyApp() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val platformSupport = remember { ProxyPlatformSupport.forSdk(Build.VERSION.SDK_INT) }
-    val autoHotspotSupport = remember { AutoHotspotSupport.forSdk(Build.VERSION.SDK_INT) }
+    val autoHotspotSupport = remember {
+        AutoHotspotSupport.forDevice(
+            manufacturer = Build.MANUFACTURER,
+            model = Build.MODEL,
+            sdk = Build.VERSION.SDK_INT
+        )
+    }
+    var accessibilityEnabled by remember {
+        mutableStateOf(AccessibilityServiceState.isAutomationServiceEnabled(context))
+    }
     // 首次进入页面时，从本地持久化里恢复用户之前保存的规则。
     var proxies by remember { mutableStateOf(ProxySettings.loadProxies(context)) }
     var runtimeStatuses by remember { mutableStateOf(ProxyRuntimeStatusStore.loadStatuses(context)) }
@@ -130,10 +139,11 @@ fun ProxyApp() {
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasNotificationPermission = isNotificationPermissionGranted(context)
                 runtimeStatuses = ProxyRuntimeStatusStore.loadStatuses(context)
+                accessibilityEnabled = AccessibilityServiceState.isAutomationServiceEnabled(context)
                 val result = AutoHotspotToggleCoordinator.onResume(
                     currentlyEnabled = autoHotspotEnabled,
                     pendingAccessibilityEnable = pendingAccessibilityEnable,
-                    accessibilityEnabled = AccessibilityServiceState.isHotspotAutomationServiceEnabled(context)
+                    accessibilityEnabled = accessibilityEnabled
                 )
                 autoHotspotEnabled = result.enabled
                 pendingAccessibilityEnable = result.pendingAccessibilityEnable
@@ -204,11 +214,13 @@ fun ProxyApp() {
             },
             autoHotspotEnabled = autoHotspotEnabled,
             autoHotspotSupported = autoHotspotSupport.isSupported,
+            accessibilityEnabled = accessibilityEnabled,
             onAutoHotspotToggle = { enabled ->
+                accessibilityEnabled = AccessibilityServiceState.isAutomationServiceEnabled(context)
                 val result = AutoHotspotToggleCoordinator.onToggleRequested(
                     requestedEnabled = enabled,
                     support = autoHotspotSupport,
-                    accessibilityEnabled = AccessibilityServiceState.isHotspotAutomationServiceEnabled(context)
+                    accessibilityEnabled = accessibilityEnabled
                 )
                 autoHotspotEnabled = result.enabled
                 pendingAccessibilityEnable = result.pendingAccessibilityEnable
@@ -228,7 +240,7 @@ fun ProxyApp() {
                 if (result.showUnsupportedMessage) {
                     Toast.makeText(
                         context,
-                        "Auto hotspot automation is only supported on Samsung SM-N9600 (Android 10)",
+                        "Auto hotspot automation is supported only on compatible Samsung Android 10 devices",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -295,6 +307,7 @@ fun ProxyListScreen(
     onToggle: (ProxyConfig, Boolean) -> Unit,
     autoHotspotEnabled: Boolean,
     autoHotspotSupported: Boolean,
+    accessibilityEnabled: Boolean,
     onAutoHotspotToggle: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
@@ -413,9 +426,13 @@ fun ProxyListScreen(
                             )
                             Text(
                                 text = if (autoHotspotSupported) {
-                                    "Check and enable every 10 mins"
+                                    if (accessibilityEnabled) {
+                                        "Accessibility automation ready (checks every 10 mins)"
+                                    } else {
+                                        "Accessibility service required"
+                                    }
                                 } else {
-                                    "Unavailable on this Android version"
+                                    "Supported only on compatible Samsung Android 10 devices"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
