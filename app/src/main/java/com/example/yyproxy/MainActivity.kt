@@ -270,8 +270,11 @@ fun ProxyApp() {
  *
  * 所有修改配置的动作最终都会调用这里，让后台代理尽快与最新配置对齐。
  */
-fun startService(context: Context) {
+fun startService(context: Context, action: String? = null) {
     val intent = Intent(context, ProxyService::class.java)
+    if (action != null) {
+        intent.action = action
+    }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         context.startForegroundService(intent)
     } else {
@@ -360,8 +363,11 @@ fun ProxyListScreen(
             TopAppBar(
                 title = { Text("Proxy Forwarder") },
                 actions = {
-                    IconButton(onClick = { ipAddresses = getLocalIpAddresses() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh IP")
+                    IconButton(onClick = { 
+                        ipAddresses = getLocalIpAddresses()
+                        startService(context, ProxyService.ACTION_REFRESH)
+                    }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh IP and Hotspot")
                     }
                 }
             ) 

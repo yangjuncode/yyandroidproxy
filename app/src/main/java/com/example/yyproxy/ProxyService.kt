@@ -42,7 +42,7 @@ class ProxyService : Service() {
 
     private val hotspotCheckRunnable = object : Runnable {
         override fun run() {
-            checkAndEnableHotspot()
+            checkAndEnableHotspot(AutomationTrigger.PERIODIC_CHECK)
             handler.postDelayed(this, hotspotCheckInterval)
         }
     }
@@ -141,6 +141,11 @@ class ProxyService : Service() {
 
         // 启动或更新热点检查任务
         handler.removeCallbacks(hotspotCheckRunnable)
+        if (intent?.action == ACTION_REFRESH) {
+            Log.d("ProxyService", "Manual refresh: triggering immediate hotspot check")
+            checkAndEnableHotspot(AutomationTrigger.MANUAL_REFRESH)
+        }
+        
         if (ProxySettings.isAutoHotspotEnabled(this) && autoHotspotSupport.isSupported) {
             handler.post(hotspotCheckRunnable)
         }
@@ -149,22 +154,34 @@ class ProxyService : Service() {
         return START_STICKY
     }
 
-    private fun checkAndEnableHotspot() {
+    private fun checkAndEnableHotspot(trigger: AutomationTrigger) {
         val hotspotState = HotspotManager.getHotspotState(this)
         val accessibilityEnabled = AccessibilityServiceState.isAutomationServiceEnabled(this)
-        val autoHotspotEnabled = ProxySettings.isAutoHotspotEnabled(this) && autoHotspotSupport.isSupported
-        val shouldRequest = ProxyServiceAutomationDecision.shouldRequestAutomation(
-            autoHotspotEnabled = autoHotspotEnabled,
-            accessibilityEnabled = accessibilityEnabled,
-            hotspotState = hotspotState
-        )
+        val isSupported = autoHotspotSupport.isSupported
+        
+        // Manual refresh always tries if supported and accessibility is on.
+        // Periodic check only tries if auto-hotspot is enabled.
+        val shouldAllowByPolicy = if (trigger == AutomationTrigger.MANUAL_REFRESH) {
+            isSupported
+        } else {
+            ProxySettings.isAutoHotspotEnabled(this) && isSupported
+        }
+
+        val shouldRequest = shouldAllowByPolicy &&
+            accessibilityEnabled &&
+            hotspotState == HotspotManager.HotspotState.DISABLED
+
+        Log.d("ProxyService", "Hotspot check ($trigger): state=$hotspotState, accessibility=$accessibilityEnabled, policy=$shouldAllowByPolicy -> shouldRequest=$shouldRequest")
+
         if (!shouldRequest) {
             syncAutomationStepTimeout()
             return
         }
 
-        if (hotspotAutomationCoordinator.requestAutomation(AutomationTrigger.PERIODIC_CHECK)) {
-            Log.d("ProxyService", "Requested Samsung hotspot accessibility automation")
+        if (hotspotAutomationCoordinator.requestAutomation(trigger)) {
+            Log.i("ProxyService", "Successfully requested hotspot automation (trigger: $trigger)")
+        } else {
+            Log.w("ProxyService", "Failed to request hotspot automation (already active or state mismatch)")
         }
         syncAutomationStepTimeout()
     }
@@ -474,6 +491,7 @@ class ProxyService : Service() {
 
     companion object {
         const val ACTION_PROXY_STATUS_CHANGED = "com.example.yyproxy.ACTION_PROXY_STATUS_CHANGED"
+        const val ACTION_REFRESH = "com.example.yyproxy.ACTION_REFRESH"
         private const val NOTIFICATION_ID = 1
         private const val SETTINGS_PACKAGE_NAME = "com.android.settings"
         private const val HOTSPOT_SETTINGS_ACTION = "com.android.settings.WIFI_TETHER_SETTINGS"

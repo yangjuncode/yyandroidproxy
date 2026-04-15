@@ -12,7 +12,8 @@ enum class AutomationStage {
 
 enum class AutomationTrigger {
     BOOT,
-    PERIODIC_CHECK
+    PERIODIC_CHECK,
+    MANUAL_REFRESH
 }
 
 data class HotspotAutomationSnapshot(

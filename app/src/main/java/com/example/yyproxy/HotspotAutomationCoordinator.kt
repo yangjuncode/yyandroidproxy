@@ -19,7 +19,16 @@ class HotspotAutomationCoordinator(
     fun snapshot(): HotspotAutomationSnapshot = snapshot
 
     fun requestAutomation(trigger: AutomationTrigger): Boolean {
-        if (isRunActive() || !accessibilityEnabled() || hotspotStateReader()) return false
+        if (!accessibilityEnabled() || hotspotStateReader()) return false
+
+        if (isRunActive()) {
+            if (trigger == AutomationTrigger.MANUAL_REFRESH) {
+                // If manual refresh, reset the state and start fresh.
+                snapshot = HotspotAutomationSnapshot()
+            } else {
+                return false
+            }
+        }
 
         snapshot = HotspotAutomationSnapshot(
             stage = AutomationStage.OPENING_HOTSPOT_SETTINGS,

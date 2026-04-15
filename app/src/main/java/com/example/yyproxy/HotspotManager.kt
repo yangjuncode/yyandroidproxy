@@ -23,6 +23,7 @@ object HotspotManager {
             val method: Method = wifiManager.javaClass.getDeclaredMethod("getWifiApState")
             val state = method.invoke(wifiManager) as Int
             hasLoggedStateReflectionFailure = false
+            Log.d(TAG, "getWifiApState returned: $state")
             if (state == WIFI_AP_STATE_ENABLED) {
                 HotspotState.ENABLED
             } else {
