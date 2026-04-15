@@ -9,8 +9,11 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -72,9 +75,17 @@ fun ProxyApp() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val platformSupport = remember { ProxyPlatformSupport.forSdk(Build.VERSION.SDK_INT) }
+    val autoHotspotSupport = remember { AutoHotspotSupport.forSdk(Build.VERSION.SDK_INT) }
     // 首次进入页面时，从本地持久化里恢复用户之前保存的规则。
     var proxies by remember { mutableStateOf(ProxySettings.loadProxies(context)) }
     var runtimeStatuses by remember { mutableStateOf(ProxyRuntimeStatusStore.loadStatuses(context)) }
+    var autoHotspotEnabled by remember {
+        mutableStateOf(
+            ProxySettings.isAutoHotspotEnabled(context) && autoHotspotSupport.canProgrammaticallyEnable
+        )
+    }
+    var pendingAutoHotspotPermissionRequest by remember { mutableStateOf(false) }
+
     // editingProxy 不为空表示正在编辑已有规则。
     var editingProxy by remember { mutableStateOf<ProxyConfig?>(null) }
     // isAdding 为 true 表示当前正在新建一条规则。
@@ -120,6 +131,19 @@ fun ProxyApp() {
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasNotificationPermission = isNotificationPermissionGranted(context)
                 runtimeStatuses = ProxyRuntimeStatusStore.loadStatuses(context)
+                val result = AutoHotspotToggleCoordinator.onResume(
+                    currentlyEnabled = autoHotspotEnabled,
+                    pendingPermissionRequest = pendingAutoHotspotPermissionRequest,
+                    canWriteSettings = Settings.System.canWrite(context)
+                )
+                autoHotspotEnabled = result.enabled
+                pendingAutoHotspotPermissionRequest = result.pendingPermissionRequest
+                if (result.persistChange) {
+                    ProxySettings.setAutoHotspot(context, result.enabled)
+                }
+                if (result.restartService) {
+                    startService(context)
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -178,6 +202,38 @@ fun ProxyApp() {
                 proxies = newList
                 ProxySettings.saveProxies(context, newList)
                 startService(context)
+            },
+            autoHotspotEnabled = autoHotspotEnabled,
+            autoHotspotSupported = autoHotspotSupport.canProgrammaticallyEnable,
+            onAutoHotspotToggle = { enabled ->
+                val result = AutoHotspotToggleCoordinator.onToggleRequested(
+                    requestedEnabled = enabled,
+                    canProgrammaticallyEnable = autoHotspotSupport.canProgrammaticallyEnable,
+                    canWriteSettings = Settings.System.canWrite(context)
+                )
+                autoHotspotEnabled = result.enabled
+                pendingAutoHotspotPermissionRequest = result.pendingPermissionRequest
+                if (result.persistChange) {
+                    ProxySettings.setAutoHotspot(context, result.enabled)
+                }
+                if (result.restartService) {
+                    startService(context)
+                }
+                if (result.openWriteSettings) {
+                    val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                    Toast.makeText(context, "Please grant Write Settings permission to enable auto hotspot", Toast.LENGTH_LONG).show()
+                }
+                if (result.showUnsupportedMessage) {
+                    Toast.makeText(
+                        context,
+                        "Auto hotspot is only supported on Android 7.x and below",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         )
     }
@@ -238,7 +294,10 @@ fun ProxyListScreen(
     onAdd: () -> Unit,
     onEdit: (ProxyConfig) -> Unit,
     onDelete: (ProxyConfig) -> Unit,
-    onToggle: (ProxyConfig, Boolean) -> Unit
+    onToggle: (ProxyConfig, Boolean) -> Unit,
+    autoHotspotEnabled: Boolean,
+    autoHotspotSupported: Boolean,
+    onAutoHotspotToggle: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var ipAddresses by remember { mutableStateOf(getLocalIpAddresses()) }
@@ -338,6 +397,35 @@ fun ProxyListScreen(
                                 fontSize = 18.sp
                             ),
                             color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.2f))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(
+                                text = "Auto Enable Hotspot",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = if (autoHotspotSupported) {
+                                    "Check and enable every 10 mins"
+                                } else {
+                                    "Unavailable on this Android version"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                            )
+                        }
+                        Switch(
+                            checked = autoHotspotEnabled,
+                            onCheckedChange = onAutoHotspotToggle
                         )
                     }
                 }

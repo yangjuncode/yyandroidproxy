@@ -36,6 +36,7 @@ data class ProxyConfig(
 object ProxySettings {
     private const val PREFS_NAME = "proxy_prefs_multi"
     private const val KEY_PROXIES = "proxies"
+    private const val KEY_AUTO_HOTSPOT = "auto_hotspot"
     private val gson = Gson()
 
     fun saveProxies(context: Context, proxies: List<ProxyConfig>) {
@@ -51,5 +52,15 @@ object ProxySettings {
         val json = prefs.getString(KEY_PROXIES, null) ?: return emptyList()
         val type = object : TypeToken<List<ProxyConfig>>() {}.type
         return gson.fromJson(json, type)
+    }
+
+    fun setAutoHotspot(context: Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_AUTO_HOTSPOT, enabled).apply()
+    }
+
+    fun isAutoHotspotEnabled(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_AUTO_HOTSPOT, false)
     }
 }
