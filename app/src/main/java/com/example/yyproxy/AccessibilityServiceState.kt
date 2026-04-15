@@ -5,10 +5,7 @@ import android.content.Context
 import android.provider.Settings
 
 object AccessibilityServiceState {
-    private const val HOTSPOT_AUTOMATION_SERVICE_CLASS =
-        "com.example.yyproxy.HotspotAutomationAccessibilityService"
-
-    fun isHotspotAutomationServiceEnabled(context: Context): Boolean {
+    fun isAutomationServiceEnabled(context: Context): Boolean {
         val accessibilityEnabled = Settings.Secure.getInt(
             context.contentResolver,
             Settings.Secure.ACCESSIBILITY_ENABLED,
@@ -21,24 +18,37 @@ object AccessibilityServiceState {
         val enabledServices = Settings.Secure.getString(
             context.contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ).orEmpty()
+        val component = ComponentName(
+            context.packageName,
+            HotspotAutomationAccessibilityService::class.java.name
         )
-        val full = ComponentName(
-            context.packageName,
-            HOTSPOT_AUTOMATION_SERVICE_CLASS
-        ).flattenToString()
-        val short = ComponentName(
-            context.packageName,
-            HOTSPOT_AUTOMATION_SERVICE_CLASS
-        ).flattenToShortString()
-        return containsService(enabledServices, full) || containsService(enabledServices, short)
+        return isServiceEnabled(
+            enabledServicesSetting = enabledServices,
+            expectedComponentFull = component.flattenToString(),
+            expectedComponentShort = component.flattenToShortString()
+        )
     }
 
-    fun containsService(enabledServices: String?, expectedServiceId: String): Boolean {
-        if (enabledServices.isNullOrBlank()) {
+    fun isHotspotAutomationServiceEnabled(context: Context): Boolean {
+        return isAutomationServiceEnabled(context)
+    }
+
+    fun isServiceEnabled(
+        enabledServicesSetting: String,
+        expectedComponentFull: String,
+        expectedComponentShort: String
+    ): Boolean {
+        if (enabledServicesSetting.isBlank()) {
             return false
         }
-        return enabledServices
+        return enabledServicesSetting
             .split(':')
-            .any { it.equals(expectedServiceId, ignoreCase = true) }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .any {
+                it.equals(expectedComponentFull, ignoreCase = true) ||
+                    it.equals(expectedComponentShort, ignoreCase = true)
+            }
     }
 }

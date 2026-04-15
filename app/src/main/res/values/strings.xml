@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">yyproxy</string>
+    <string name="hotspot_automation_accessibility_service_description">Automates Samsung hotspot settings actions when auto-hotspot is enabled.</string>
 </resources>
