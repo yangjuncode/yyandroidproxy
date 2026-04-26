@@ -8,6 +8,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -38,9 +40,13 @@ class ProxyService : Service() {
     private var isShuttingDown = false
     private val handler = Handler(Looper.getMainLooper())
     private val hotspotCheckInterval = 10 * 60 * 1000L // 10 minutes
+    private val batteryCheckInterval = 5 * 60 * 1000L // 5 minutes
     private val automationStepTimeoutMs = 40 * 1000L
     private var lastHotspotCheckTime = 0L
     private var hasEnabledOnce = false
+    private var batteryAlertManager: BatteryAlertManager? = null
+    private var isBatteryAlertActive = false
+    private val batteryAlertTimeoutMs = 30 * 1000L
 
     private val hotspotCheckRunnable = object : Runnable {
         override fun run() {
@@ -59,6 +65,25 @@ class ProxyService : Service() {
         override fun run() {
             hotspotAutomationCoordinator.onStepTimeout()
             syncAutomationStepTimeout()
+        }
+    }
+
+    private val batteryCheckRunnable = object : Runnable {
+        override fun run() {
+            checkBatteryStatus()
+            handler.postDelayed(this, batteryCheckInterval)
+        }
+    }
+
+    private val stopBatteryAlertRunnable = Runnable {
+        stopLowBatteryAlert("Timeout reached")
+    }
+
+    private val powerConnectionReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+            if (intent?.action == Intent.ACTION_POWER_CONNECTED) {
+                stopLowBatteryAlert("Charger connected")
+            }
         }
     }
 
@@ -139,6 +164,7 @@ class ProxyService : Service() {
         isShuttingDown = false
         createNotificationChannel()
         HotspotAutomationRuntime.coordinator = runtimeBridge
+        batteryAlertManager = BatteryAlertManager(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -169,6 +195,11 @@ class ProxyService : Service() {
                 }
             }
         }
+        
+        // Start battery check
+        handler.removeCallbacks(batteryCheckRunnable)
+        handler.post(batteryCheckRunnable)
+        
         syncAutomationStepTimeout()
 
         return START_STICKY
@@ -220,6 +251,68 @@ class ProxyService : Service() {
             Log.w("ProxyService", "Failed to request hotspot automation (already active or state mismatch)")
         }
         syncAutomationStepTimeout()
+    }
+
+    private fun checkBatteryStatus() {
+        val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { filter ->
+            registerReceiver(null, filter)
+        }
+
+        val level: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val status: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == BatteryManager.BATTERY_STATUS_FULL
+        val batteryPct = level * 100 / scale.toFloat()
+
+        Log.d("ProxyService", "Battery check: $batteryPct%, charging: $isCharging")
+
+        if (isCharging) {
+            stopLowBatteryAlert("Is charging")
+            return
+        }
+
+        if (batteryPct >= 0 && batteryPct < 10) {
+            startLowBatteryAlert(batteryPct)
+        } else {
+            stopLowBatteryAlert("Battery above threshold")
+        }
+    }
+
+    private fun startLowBatteryAlert(percentage: Float) {
+        if (isBatteryAlertActive) return
+
+        Log.w("ProxyService", "Starting low battery alert ($percentage%)")
+        isBatteryAlertActive = true
+        batteryAlertManager?.triggerAlert()
+
+        // Register receiver to stop immediately when plugged in
+        // Defensive: unregister first to avoid duplicate registration if state is somehow desynced
+        try {
+            unregisterReceiver(powerConnectionReceiver)
+        } catch (e: IllegalArgumentException) {
+            // Not registered yet, safe to ignore
+        }
+        registerReceiver(powerConnectionReceiver, IntentFilter(Intent.ACTION_POWER_CONNECTED))
+        
+        // Auto stop after 30 seconds
+        handler.removeCallbacks(stopBatteryAlertRunnable)
+        handler.postDelayed(stopBatteryAlertRunnable, batteryAlertTimeoutMs)
+    }
+
+    private fun stopLowBatteryAlert(reason: String) {
+        if (!isBatteryAlertActive) return
+        
+        Log.i("ProxyService", "Stopping low battery alert. Reason: $reason")
+        isBatteryAlertActive = false
+        batteryAlertManager?.stopAlert()
+        
+        try {
+            unregisterReceiver(powerConnectionReceiver)
+        } catch (e: IllegalArgumentException) {
+            // Already unregistered
+        }
+        handler.removeCallbacks(stopBatteryAlertRunnable)
     }
 
     private fun handleHotspotSettingsLaunchFailure(message: String, error: Throwable? = null) {
@@ -481,8 +574,15 @@ class ProxyService : Service() {
     override fun onDestroy() {
         // Service 销毁时兜底关闭所有正在运行的转发器，防止残留端口监听。
         isShuttingDown = true
+        stopLowBatteryAlert("Service destroyed")
         handler.removeCallbacks(hotspotCheckRunnable)
         handler.removeCallbacks(automationStepTimeoutRunnable)
+        handler.removeCallbacks(batteryCheckRunnable)
+        handler.removeCallbacks(stopBatteryAlertRunnable)
+        
+        batteryAlertManager?.release()
+        batteryAlertManager = null
+        
         if (HotspotAutomationRuntime.coordinator === runtimeBridge) {
             HotspotAutomationRuntime.coordinator = null
         }
